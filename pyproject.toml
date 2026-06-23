@@ -1,0 +1,47 @@
+[project]
+name = "desktop-agent"
+version = "0.1.0"
+description = "Desktop AI Agent — 跨平台自动化任务执行"
+requires-python = ">=3.11"
+
+dependencies = [
+    "playwright>=1.45",
+    "pywinauto>=0.6.8",
+    "uiautomation>=2.0",
+    "pywin32>=306",
+    "anthropic>=0.39",
+    "openai>=1.50",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "loguru>=0.7",
+    "pyyaml>=6.0",
+    "pillow>=10.0",
+    "mss>=9.0",
+    "opencv-python>=4.9",
+    "chromadb>=0.5",
+    "python-dotenv>=1.0",
+    "tenacity>=8.5",
+    "gradio>=4.0",
+    "customtkinter>=5.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-playwright>=0.5",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

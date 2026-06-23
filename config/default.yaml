@@ -1,0 +1,40 @@
+agent:
+  max_steps: 20
+  step_timeout: 60
+  retry_max: 3
+  screenshot_on_error: true
+
+llm:
+  provider: deepseek            # deepseek | anthropic | openai | local
+  model: deepseek-chat          # deepseek-chat (V3) | deepseek-reasoner (R1)
+  base_url: "https://api.deepseek.com"
+  temperature: 0.3
+  max_tokens: 4096
+
+vision:
+  provider: deepseek
+  model: deepseek-chat
+
+image_gen:
+  provider: openai
+  model: dall-e-3
+  default_size: "1024x1024"
+
+browser:
+  engine: playwright
+  headless: false
+  viewport_width: 1280
+  viewport_height: 720
+  user_data_dir: "./browser_data"
+
+desktop:
+  screenshot_dir: "./screenshots"
+  app_paths:
+    wps: "C:\\Program Files\\Kingsoft\\WPS Office\\wps.exe"
+    wechat: "C:\\Program Files\\Tencent\\WeChat\\WeChat.exe"
+
+logging:
+  level: INFO
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function} | {message}"
+  rotation: "10 MB"
+  retention: "7 days"
