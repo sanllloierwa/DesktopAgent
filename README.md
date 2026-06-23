@@ -169,3 +169,7 @@ DesktopAgent/
 - **Gradio / CustomTkinter** — Web 与原生双界面
 - **ChromaDB** — 长期记忆向量存储
 - **mss / Pillow / OpenCV** — 屏幕感知与图像处理
+
+## 当前状态
+
+  只是一个小的运行测试，很多内容尚未进行测试，仍在持续进行中……与DeepSeek-v4 + Claude Code 协同生产，本文档完全由AI生成，暂时不对其中内容的真实性做保证……此外，本项目是一个实习项目。
