@@ -1,11 +1,11 @@
-"""Vision tools — screenshot analysis via LLM"""
+"""Vision tools — screenshot analysis via dedicated vision LLM"""
 
 from __future__ import annotations
 
 from loguru import logger
 
 from src.tools.base import BaseTool, ToolSchema
-from src.utils.llm_factory import create_llm_client
+from src.utils.llm_factory import create_vision_client, _AnthropicAdapter
 
 
 class AnalyzeScreenTool(BaseTool):
@@ -30,17 +30,14 @@ class AnalyzeScreenTool(BaseTool):
 
     async def execute(self, image_base64: str, question: str = "描述这个画面中的内容") -> dict:
         try:
-            llm = create_llm_client()
+            llm = create_vision_client()
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-        # 检查是否 Anthropic（原生支持 vision）
-        provider = getattr(llm, "_client", None)
-        is_anthropic = hasattr(provider, "messages") and not hasattr(provider, "chat")
+        is_anthropic = isinstance(llm, _AnthropicAdapter)
 
         try:
             if is_anthropic:
-                # Anthropic 原生 vision
                 resp = await llm.messages.create(
                     max_tokens=1024,
                     messages=[{
@@ -59,14 +56,21 @@ class AnalyzeScreenTool(BaseTool):
                     }],
                 )
             else:
-                # OpenAI/DeepSeek 兼容 - DeepSeek chat 模型目前不原生支持 vision
-                # 用文字描述替代
+                # OpenAI 兼容格式 — 支持 GPT-4o、Agnes-2.0-flash 等多模态模型
                 resp = await llm.messages.create(
-                    max_tokens=512,
+                    max_tokens=1024,
                     temperature=0.2,
                     messages=[{
                         "role": "user",
-                        "content": question + "（注意：当前模型不支持图像分析，请基于常识回答）",
+                        "content": [
+                            {"type": "text", "text": question},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{image_base64}",
+                                },
+                            },
+                        ],
                     }],
                 )
 

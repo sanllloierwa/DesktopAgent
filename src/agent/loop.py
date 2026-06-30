@@ -62,11 +62,12 @@ class AgentLoop:
         # 1. 规划
         await self.events.emit(AgentEvent.plan_start(task.goal))
         context = self.memory.context_for_planner()
-        steps = await self.planner.plan(task, context)
+        steps, fallback = await self.planner.plan(task, context)
         if not steps:
             task.mark_failed()
-            await self.events.emit(AgentEvent.error("Planner returned no steps"))
-            return LoopResult(success=False, task=task, summary="Planner returned no steps")
+            reason = fallback or "Planner returned no steps"
+            await self.events.emit(AgentEvent.error(reason))
+            return LoopResult(success=False, task=task, summary=reason)
 
         task.steps = steps
         await self.events.emit(AgentEvent.plan_done(steps))
@@ -132,16 +133,17 @@ class AgentLoop:
 
                 if not ok:
                     context = self.memory.context_for_planner()
-                    new_steps = await self.planner.replan(task, step, reason, context)
+                    new_steps, fallback = await self.planner.replan(task, step, reason, context)
                     if new_steps:
                         task.steps = task.steps[:step_index] + new_steps
                         self.state.record_success()
                         continue
                     else:
                         task.mark_failed()
+                        summary = fallback or f"Step failed: {reason}"
                         await self.events.emit(AgentEvent.task_done(
-                            False, f"Step failed: {reason}", self.state.step_count, 0))
-                        return LoopResult(success=False, task=task, summary=f"Step failed: {reason}")
+                            False, summary, self.state.step_count, 0))
+                        return LoopResult(success=False, task=task, summary=summary)
 
             self.state.record_success()
             step_index += 1

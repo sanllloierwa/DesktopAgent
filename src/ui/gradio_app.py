@@ -241,6 +241,11 @@ PROVIDER_INFO = {
         "models": ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"],
         "help": "https://console.anthropic.com/keys",
     },
+    "agnes": {
+        "name": "Agnes AI",
+        "models": ["agnes-2.0-flash"],
+        "help": "https://platform.agnes-ai.com/",
+    },
 }
 
 
@@ -315,6 +320,16 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                     an_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
                     an_status = gr.HTML("", scale=1)
 
+                ag_key = gr.Textbox(
+                    label="Agnes AI API Key",
+                    value=user_settings.get_key("agnes"),
+                    type="password",
+                    placeholder="ag-...",
+                )
+                with gr.Row():
+                    ag_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
+                    ag_status = gr.HTML("", scale=1)
+
             with gr.Row():
                 save_btn = gr.Button("保存设置", variant="primary", scale=0)
                 settings_msg = gr.Textbox(label="", interactive=False, scale=1, show_label=False, container=False)
@@ -381,15 +396,17 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
         ds_show.change(on_show_key, inputs=[ds_key, ds_show], outputs=[ds_key])
         oa_show.change(on_show_key, inputs=[oa_key, oa_show], outputs=[oa_key])
         an_show.change(on_show_key, inputs=[an_key, an_show], outputs=[an_key])
+        ag_show.change(on_show_key, inputs=[ag_key, ag_show], outputs=[ag_key])
 
         def on_save_settings(
             provider: str, model: str,
-            ds: str, oa: str, an: str,
+            ds: str, oa: str, an: str, ag: str,
         ) -> tuple:
             settings = UserSettings(
                 deepseek_api_key=ds.strip(),
                 openai_api_key=oa.strip(),
                 anthropic_api_key=an.strip(),
+                agnes_api_key=ag.strip(),
                 default_provider=provider,
                 default_model=model,
             )
@@ -412,12 +429,13 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 key_status(ds.strip(), "DeepSeek"),
                 key_status(oa.strip(), "OpenAI"),
                 key_status(an.strip(), "Anthropic"),
+                key_status(ag.strip(), "Agnes AI"),
             )
 
         save_btn.click(
             on_save_settings,
-            inputs=[provider_dd, model_dd, ds_key, oa_key, an_key],
-            outputs=[settings_msg, ds_status, oa_status, an_status],
+            inputs=[provider_dd, model_dd, ds_key, oa_key, an_key, ag_key],
+            outputs=[settings_msg, ds_status, oa_status, an_status, ag_status],
         )
 
         # ==================================================================

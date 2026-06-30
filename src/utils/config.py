@@ -31,6 +31,7 @@ class LLMConfig(BaseModel):
 class VisionConfig(BaseModel):
     provider: str = "deepseek"
     model: str = "deepseek-chat"
+    base_url: str = ""
 
 
 class ImageGenConfig(BaseModel):
@@ -75,6 +76,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
+    agnes_api_key: str = ""
     local_llm_base_url: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

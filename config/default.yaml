@@ -12,8 +12,9 @@ llm:
   max_tokens: 4096
 
 vision:
-  provider: deepseek
-  model: deepseek-chat
+  provider: agnes               # agnes | anthropic | openai | deepseek | local
+  model: agnes-2.0-flash        # agnes-2.0-flash (推荐，256K上下文，支持视觉)
+  base_url: "https://apihub.agnes-ai.com/v1"
 
 image_gen:
   provider: openai

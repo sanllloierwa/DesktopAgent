@@ -8,6 +8,8 @@ from src.tools.base import ToolRegistry
 
 # Desktop tools
 from src.tools.desktop.app_control import LaunchAppTool, CloseAppTool
+from src.tools.desktop.screen_capture import DesktopScreenshotTool
+from src.tools.desktop.text_input import DesktopTypeTextTool
 from src.tools.desktop.wps_com import (
     CreateDocumentTool,
     WriteTextTool,
@@ -36,9 +38,19 @@ from src.tools.ai.vision import AnalyzeScreenTool
 def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     """将所有工具注册到给定的 registry 中，返回同一个 registry"""
 
+    # 动态发现已安装应用
+    try:
+        from src.utils.app_discovery import discover_apps
+        discovered_apps = discover_apps()
+    except Exception as exc:
+        logger.warning(f"App discovery failed, using empty list: {exc}")
+        discovered_apps = {}
+
     # --- Desktop ---
-    registry.register(LaunchAppTool())
-    registry.register(CloseAppTool())
+    registry.register(LaunchAppTool(discovered_apps=discovered_apps))
+    registry.register(CloseAppTool(discovered_apps=discovered_apps))
+    registry.register(DesktopScreenshotTool())
+    registry.register(DesktopTypeTextTool())
     registry.register(CreateDocumentTool())
     registry.register(WriteTextTool())
     registry.register(SetFontTool())

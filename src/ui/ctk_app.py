@@ -150,6 +150,10 @@ PROVIDER_INFO = {
         "name": "Anthropic",
         "models": ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"],
     },
+    "agnes": {
+        "name": "Agnes AI",
+        "models": ["agnes-2.0-flash"],
+    },
 }
 
 
@@ -280,6 +284,7 @@ class CtkDesktopAgent:
         self._build_key_row(keys_frame, "DeepSeek API Key", "deepseek", 0)
         self._build_key_row(keys_frame, "OpenAI API Key", "openai", 1)
         self._build_key_row(keys_frame, "Anthropic API Key", "anthropic", 2)
+        self._build_key_row(keys_frame, "Agnes AI API Key", "agnes", 3)
 
         # Save button
         save_frame = ctk.CTkFrame(self.settings_tab, fg_color="transparent")
@@ -346,7 +351,7 @@ class CtkDesktopAgent:
         self.model_var.set(us.default_model)
         self._on_provider_changed(us.default_provider)
 
-        for p in ["deepseek", "openai", "anthropic"]:
+        for p in ["deepseek", "openai", "anthropic", "agnes"]:
             var = getattr(self, f"key_{p}", None)
             if var:
                 var.set(us.get_key(p))
@@ -363,6 +368,7 @@ class CtkDesktopAgent:
             deepseek_api_key=getattr(self, "key_deepseek").get().strip(),
             openai_api_key=getattr(self, "key_openai").get().strip(),
             anthropic_api_key=getattr(self, "key_anthropic").get().strip(),
+            agnes_api_key=getattr(self, "key_agnes").get().strip(),
             default_provider=self.provider_var.get(),
             default_model=self.model_var.get(),
         )

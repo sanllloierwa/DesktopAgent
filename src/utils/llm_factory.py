@@ -1,4 +1,4 @@
-"""LLM client factory — 统一 Anthropic / OpenAI / DeepSeek 接口"""
+"""LLM client factory — 统一 Anthropic / OpenAI / DeepSeek / Agnes / Local 接口"""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from typing import Any
 from src.utils.config import load_config, AppConfig, LLMConfig
 from src.utils.secret import get_api_key
 
-# DeepSeek API 默认地址
+# Provider 默认 base URL
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
 
 
 class ContentBlock:
@@ -24,15 +25,15 @@ class LLMResponse:
         self.raw = raw
 
 
-class _DeepSeekAdapter:
-    """DeepSeek / OpenAI 兼容 → Anthropic 风格接口适配"""
+class _OpenAICompatAdapter:
+    """OpenAI 兼容接口适配（OpenAI / DeepSeek / Agnes / Local）"""
 
     def __init__(self, client: Any, model: str) -> None:
         self._client = client
         self.model = model
 
     @property
-    def messages(self) -> "_DeepSeekAdapter":
+    def messages(self) -> "_OpenAICompatAdapter":
         return self
 
     async def create(
@@ -87,22 +88,8 @@ class _AnthropicAdapter:
         )
 
 
-def create_llm_client(config: AppConfig | None = None, provider_override: str | None = None) -> Any:
-    """创建 LLM 客户端实例，返回统一接口对象（有 .model 和 .messages.create()）
-
-    配置优先级: 参数 provider_override > 用户设置(UI保存) > YAML 配置文件
-    """
-    if config is None:
-        config = load_config()
-
-    # 用户通过 UI 保存的设置优先于 YAML
-    from src.utils.user_settings import get_user_settings
-    us = get_user_settings()
-    provider = provider_override or us.default_provider or config.llm.provider
-    model = us.default_model or config.llm.model
-
-    llm_cfg: LLMConfig = config.llm
-
+def _create_client(provider: str, model: str, base_url_override: str = "") -> Any:
+    """内部工厂：根据 provider 创建适配后的客户端"""
     if provider == "anthropic":
         import anthropic
         api_key = get_api_key("anthropic")
@@ -112,22 +99,63 @@ def create_llm_client(config: AppConfig | None = None, provider_override: str | 
     elif provider == "deepseek":
         import openai
         api_key = get_api_key("deepseek")
-        base_url = getattr(llm_cfg, "base_url", None) or DEEPSEEK_BASE_URL
+        base_url = base_url_override or DEEPSEEK_BASE_URL
         client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
-        return _DeepSeekAdapter(client, model)
+        return _OpenAICompatAdapter(client, model)
 
     elif provider == "openai":
         import openai
         api_key = get_api_key("openai")
         client = openai.AsyncOpenAI(api_key=api_key)
-        return _DeepSeekAdapter(client, model)
+        return _OpenAICompatAdapter(client, model)
+
+    elif provider == "agnes":
+        import openai
+        api_key = get_api_key("agnes")
+        base_url = base_url_override or AGNES_BASE_URL
+        client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+        return _OpenAICompatAdapter(client, model)
 
     elif provider == "local":
         import openai
         from src.utils.secret import get_local_base_url
-        base_url = get_local_base_url() or "http://localhost:11434/v1"
+        base_url = base_url_override or get_local_base_url() or "http://localhost:11434/v1"
         client = openai.AsyncOpenAI(base_url=base_url, api_key="ollama")
-        return _DeepSeekAdapter(client, model)
+        return _OpenAICompatAdapter(client, model)
 
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
+
+
+def create_llm_client(config: AppConfig | None = None, provider_override: str | None = None) -> Any:
+    """创建 LLM 客户端实例，返回统一接口对象（有 .model 和 .messages.create()）
+
+    配置优先级: 参数 provider_override > 用户设置(UI保存) > YAML 配置文件
+    """
+    if config is None:
+        config = load_config()
+
+    from src.utils.user_settings import get_user_settings
+    us = get_user_settings()
+    provider = provider_override or us.default_provider or config.llm.provider
+    model = us.default_model or config.llm.model
+    base_url = getattr(config.llm, "base_url", "") or ""
+
+    return _create_client(provider, model, base_url)
+
+
+def create_vision_client(config: AppConfig | None = None) -> Any:
+    """创建视觉分析专用客户端，读取 config.vision 配置
+
+    配置优先级: 用户设置(UI保存) > YAML vision 配置
+    """
+    if config is None:
+        config = load_config()
+
+    from src.utils.user_settings import get_user_settings
+    us = get_user_settings()
+    provider = us.default_provider or config.vision.provider
+    model = us.default_model or config.vision.model
+    base_url = getattr(config.vision, "base_url", "") or ""
+
+    return _create_client(provider, model, base_url)

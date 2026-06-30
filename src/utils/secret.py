@@ -22,6 +22,7 @@ def get_api_key(provider: str) -> str:
         "deepseek": settings.deepseek_api_key or None,
         "anthropic": settings.anthropic_api_key or None,
         "openai": settings.openai_api_key or None,
+        "agnes": settings.agnes_api_key or None,
     }
     key = key_map.get(provider)
     if key:
