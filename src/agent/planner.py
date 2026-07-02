@@ -29,9 +29,15 @@ class Planner:
 4. 失败重试策略默认使用 "once"，仅对网络相关操作使用 "exponential"
 5. 只在确定需要重试时使用 retry_policy，大多数步骤保持 "once"
 
+关键规则 — 不要规划备选方案:
+6. 每个步骤都是达成目标所必需的，不要把备选方案作为独立步骤
+7. 禁止生成"如果 X 失败则尝试 Y"或"尝试 A→若不行用 B"这类回退步骤
+8. 系统有自动重试和重新规划机制，失败时会自行生成替代方案，不需要你预先准备
+9. 如果只需一步就能完成任务（如"打开浏览器"），只规划一个步骤
+
 关键规则 — 当工具不匹配时:
-6. 如果用户目标需要的操作在可用工具中完全没有对应项，不要强行匹配不相关的工具
-7. 此时应返回空步骤列表并给出 fallback 说明:
+10. 如果用户目标需要的操作在可用工具中完全没有对应项，不要强行匹配不相关的工具
+11. 此时应返回空步骤列表并给出 fallback 说明:
    {"steps": [], "fallback": "无法完成：<具体原因>。建议：<替代方案或需要补充的工具>"}
 
 输出格式:
@@ -88,9 +94,14 @@ class Planner:
 
         user_prompt = f"""用户目标: {task.goal}
 
-一个步骤执行失败了，请重新规划后续步骤。
+一个步骤执行失败了，请规划一个替代步骤来完成任务。
 失败步骤: {failed_step.description}
 失败原因: {error_reason}
+
+重要规则:
+- 只规划一个最好的替代步骤，不要规划多个备选方案
+- 如果这一个步骤也失败，系统会再次自动重新规划，不需要你准备回退方案
+- 尝试不同的方法或参数来达成同一目标
 
 当前上下文:
 {context or '(无)'}
@@ -98,7 +109,7 @@ class Planner:
 可用工具:
 {tools_text}
 
-请规划接下来的执行步骤 (JSON):"""
+请规划一个替代步骤 (JSON):"""
 
         try:
             data = await self._call_llm(user_prompt)
@@ -106,6 +117,14 @@ class Planner:
             if fallback:
                 logger.warning(f"Replan cannot recover: {fallback}")
                 return [], fallback
+            # Safety: cap replanned steps to prevent LLM from generating
+            # a long list of fallback alternatives
+            if len(steps) > 2:
+                logger.warning(
+                    f"Replan returned {len(steps)} steps, capping to first 2. "
+                    f"LLM should generate a single best alternative, not multiple fallbacks."
+                )
+                steps = steps[:2]
             logger.info(f"Replan generated {len(steps)} alternative steps")
             return steps, ""
         except Exception as exc:

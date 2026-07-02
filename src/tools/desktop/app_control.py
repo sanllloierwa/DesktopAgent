@@ -100,7 +100,7 @@ def _search_common_dirs(app_name: str) -> str | None:
         ]:
             if candidate.is_file():
                 return str(candidate)
-        # 浅层搜索（最多 2 层深度，避免全盘扫描）
+        # 浅层搜索（最多 3 层深度，覆盖 Microsoft/Edge/Application/msedge.exe 等路径）
         try:
             for item in root.iterdir():
                 if not item.is_dir():
@@ -111,10 +111,20 @@ def _search_common_dirs(app_name: str) -> str | None:
                 # 再深一层
                 try:
                     for sub_item in item.iterdir():
-                        if sub_item.is_dir():
-                            target2 = sub_item / exe_name
-                            if target2.is_file():
-                                return str(target2)
+                        if not sub_item.is_dir():
+                            continue
+                        target2 = sub_item / exe_name
+                        if target2.is_file():
+                            return str(target2)
+                        # 再深一层（第 3 层）
+                        try:
+                            for sub_sub_item in sub_item.iterdir():
+                                if sub_sub_item.is_dir():
+                                    target3 = sub_sub_item / exe_name
+                                    if target3.is_file():
+                                        return str(target3)
+                        except PermissionError:
+                            continue
                 except PermissionError:
                     continue
         except PermissionError:
@@ -163,22 +173,54 @@ class LaunchAppTool(BaseTool):
             },
         )
 
+    def _lookup_app(self, app_name: str) -> str | None:
+        """在 discovered_apps 中模糊匹配应用名称。
+
+        匹配策略：
+        1. 大小写不敏感的精确匹配
+        2. 常见别名映射（如 \"edge\" → \"msedge\"）
+        3. app_name 是 discovered key 的子串
+        4. discovered key 的单词是 app_name 的子串
+        """
+        app_lower = app_name.strip().lower()
+        if not app_lower or not self.discovered_apps:
+            return None
+
+        # 1. 精确匹配
+        for k, v in self.discovered_apps.items():
+            if k.lower() == app_lower:
+                return v
+
+        # 2. 常见别名
+        aliases: dict[str, str] = {
+            "edge": "msedge", "microsoft edge": "msedge", "ms edge": "msedge",
+            "vscode": "code", "visual studio code": "code", "vs code": "code",
+            "wps office": "wps", "kingsoft wps": "wps",
+        }
+        resolved = aliases.get(app_lower, app_lower)
+        for k, v in self.discovered_apps.items():
+            if k.lower() == resolved:
+                return v
+
+        # 3. app_name 包含在 discovered key 中
+        for k, v in self.discovered_apps.items():
+            if app_lower in k.lower():
+                return v
+
+        # 4. discovered key 的某个单词包含在 app_name 中
+        for k, v in self.discovered_apps.items():
+            if any(word in app_lower for word in k.lower().split() if len(word) >= 3):
+                return v
+
+        return None
+
     async def execute(self, app_name: str, wait_time: float = 3.0) -> dict:
-        # 先查动态发现列表
-        if app_name.lower() in {k.lower() for k in self.discovered_apps}:
-            for k, v in self.discovered_apps.items():
-                if k.lower() == app_name.lower():
-                    path = v
-                    break
-            else:
-                path = ""
-        else:
-            path = find_executable(app_name)
+        path = self._lookup_app(app_name) or find_executable(app_name)
 
         if path:
             logger.info(f"Launching: {path}")
             try:
-                subprocess.Popen([path], shell=True)
+                subprocess.Popen([path], shell=False)
             except Exception as exc:
                 return {"success": False, "error": f"Launch failed: {exc}", "summary": ""}
             time.sleep(wait_time)

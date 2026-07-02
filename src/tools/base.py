@@ -42,11 +42,20 @@ class BaseTool(ABC):
         }
 
     async def safe_execute(self, **kwargs) -> dict[str, Any]:
-        """带异常捕获的安全执行"""
+        """带异常捕获的安全执行。
+
+        如果工具的 execute() 返回一个包含 success 字段的字典，则将其中的
+        success / error / summary 提升到外层，其余字段放入 data。
+        """
         try:
             if not self.validate(**kwargs):
                 return {"success": False, "error": "Parameter validation failed", "data": None}
             result = await self.execute(**kwargs)
+            if isinstance(result, dict) and "success" in result:
+                success = result.pop("success")
+                error = result.pop("error", None)
+                summary = result.pop("summary", "")
+                return {"success": success, "error": error, "summary": summary, "data": result}
             return {"success": True, "error": None, "data": result}
         except Exception as exc:
             logger.error(f"[{self.schema.name}] execution failed: {exc}")
