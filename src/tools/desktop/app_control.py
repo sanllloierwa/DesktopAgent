@@ -13,6 +13,18 @@ from loguru import logger
 
 from src.tools.base import BaseTool, ToolSchema
 
+# Chromium-based browsers that support --remote-debugging-port for CDP connection
+_CHROMIUM_BROWSERS = {
+    "chrome", "msedge", "edge", "brave", "opera", "chromium",
+    "googlechrome", "microsoftedge",
+}
+
+
+def _is_chromium_browser(app_name: str) -> bool:
+    """检测应用名称是否对应一个 Chromium 内核浏览器"""
+    name = os.path.basename(app_name).lower().replace(".exe", "")
+    return name in _CHROMIUM_BROWSERS
+
 
 def find_executable(app_name: str) -> str | None:
     """通用可执行文件查找，按优先级：
@@ -216,21 +228,31 @@ class LaunchAppTool(BaseTool):
 
     async def execute(self, app_name: str, wait_time: float = 3.0) -> dict:
         path = self._lookup_app(app_name) or find_executable(app_name)
+        if not path:
+            return {
+                "success": False,
+                "error": f"未找到应用 '{app_name}'。请确认应用已安装，或提供完整路径。",
+                "summary": "",
+            }
 
-        if path:
-            logger.info(f"Launching: {path}")
-            try:
-                subprocess.Popen([path], shell=False)
-            except Exception as exc:
-                return {"success": False, "error": f"Launch failed: {exc}", "summary": ""}
-            time.sleep(wait_time)
-            return {"success": True, "app_name": app_name, "path": path, "summary": f"Launched {app_name} ({path})"}
-
-        return {
-            "success": False,
-            "error": f"未找到应用 '{app_name}'。请确认应用已安装，或提供完整路径。",
-            "summary": "",
-        }
+        logger.info(f"Launching: {path}")
+        try:
+            args = [path]
+            # Chromium 内核浏览器：开启 CDP 调试端口供 Playwright 连接
+            if _is_chromium_browser(path):
+                args.append("--remote-debugging-port=9222")
+                # 使用独立 user-data-dir 强制启动新实例，避免复用已运行的无 CDP 进程
+                from src.utils.config import load_config
+                browser_cfg = load_config().browser
+                user_dir = browser_cfg.user_data_dir
+                if user_dir:
+                    abs_dir = os.path.abspath(user_dir)
+                    args.append(f"--user-data-dir={abs_dir}")
+            subprocess.Popen(args, shell=False)
+        except Exception as exc:
+            return {"success": False, "error": f"Launch failed: {exc}", "summary": ""}
+        time.sleep(wait_time)
+        return {"success": True, "app_name": app_name, "path": path, "summary": f"Launched {app_name} ({path})"}
 
 
 class CloseAppTool(BaseTool):

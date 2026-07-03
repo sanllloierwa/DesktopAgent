@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -10,8 +11,30 @@ from src.tools.base import BaseTool, ToolSchema
 from src.utils.config import load_config
 
 
+async def _try_connect_cdp(pw, max_retries: int = 10, delay: float = 0.5):
+    """尝试通过 CDP 连接到系统 Chrome（由 LaunchAppTool 以 --remote-debugging-port=9222 启动）。
+
+    返回 Browser 对象，连接失败返回 None。
+    """
+    for i in range(max_retries):
+        try:
+            browser = await pw.chromium.connect_over_cdp("http://localhost:9222")
+            logger.info("已通过 CDP 连接到系统 Chrome (localhost:9222)")
+            return browser
+        except Exception:
+            if i < max_retries - 1:
+                await asyncio.sleep(delay)
+    return None
+
+
 async def _get_page():
-    """获取或创建 Playwright 页面单例"""
+    """获取或创建 Playwright 页面单例。
+
+    优先级：
+    1. 复用已有有效页面
+    2. 通过 CDP 连接系统 Chrome（LaunchAppTool 启动的带 --remote-debugging-port 的浏览器）
+    3. 启动 Playwright 自带 Chromium 作为后备
+    """
     if hasattr(_get_page, "_page") and _get_page._page and not _get_page._page.is_closed():  # type: ignore[attr-defined]
         return _get_page._page  # type: ignore[attr-defined]
 
@@ -20,14 +43,41 @@ async def _get_page():
     browser_cfg = config.browser
 
     pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=browser_cfg.headless,
-        args=[f"--window-size={browser_cfg.viewport_width},{browser_cfg.viewport_height}"],
-    )
-    context = await browser.new_context(
-        viewport={"width": browser_cfg.viewport_width, "height": browser_cfg.viewport_height},
-    )
-    page = await context.new_page()
+
+    # 1) 尝试 CDP 连接系统 Chrome
+    browser = await _try_connect_cdp(pw)
+
+    if browser is not None:
+        contexts = browser.contexts
+        if contexts:
+            context = contexts[0]
+        else:
+            context = await browser.new_context(
+                viewport={"width": browser_cfg.viewport_width, "height": browser_cfg.viewport_height},
+            )
+        # 创建新页面，避免复用可能处于特殊状态的默认页
+        page = await context.new_page()
+    else:
+        # 2) 后备：启动 Playwright 自带 Chromium
+        logger.info("CDP 连接失败，启动 Playwright Chromium 作为后备")
+        try:
+            browser = await pw.chromium.launch(
+                headless=browser_cfg.headless,
+                args=[f"--window-size={browser_cfg.viewport_width},{browser_cfg.viewport_height}"],
+            )
+        except Exception as exc:
+            error_msg = str(exc)
+            if "Executable doesn't exist" in error_msg or "chromium" in error_msg.lower():
+                raise RuntimeError(
+                    "Playwright Chromium 浏览器未安装。请运行: playwright install chromium"
+                ) from exc
+            raise
+
+        context = await browser.new_context(
+            viewport={"width": browser_cfg.viewport_width, "height": browser_cfg.viewport_height},
+        )
+        page = await context.new_page()
+
     _get_page._page = page  # type: ignore[attr-defined]
     _get_page._pw = pw  # type: ignore[attr-defined]
     _get_page._browser = browser  # type: ignore[attr-defined]
