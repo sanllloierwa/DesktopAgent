@@ -34,6 +34,9 @@ from src.tools.browser.navigate import (
 from src.tools.ai.text_gen import GenerateArticleTool, SummarizeTool
 from src.tools.ai.vision import AnalyzeScreenTool
 
+# Interactive tools
+from src.tools.interactive.user_input import RequestUserInputTool
+
 
 def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     """将所有工具注册到给定的 registry 中，返回同一个 registry"""
@@ -71,6 +74,9 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     registry.register(GenerateArticleTool())
     registry.register(SummarizeTool())
     registry.register(AnalyzeScreenTool())
+
+    # --- Interactive ---
+    registry.register(RequestUserInputTool())
 
     logger.info(f"Registered {len(registry.list_names())} tools: {registry.list_names()}")
     return registry

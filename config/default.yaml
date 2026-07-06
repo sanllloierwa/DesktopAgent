@@ -2,6 +2,7 @@ agent:
   max_steps: 20
   step_timeout: 60
   retry_max: 3
+  replan_max: 5
   screenshot_on_error: true
 
 llm:

@@ -75,6 +75,7 @@ class AgentLoop:
 
         # 2. 执行循环
         step_index = 0
+        replan_count = 0  # 跟踪连续 replan 次数，防止无限循环
         while step_index < len(task.steps):
             step = task.steps[step_index]
 
@@ -98,7 +99,7 @@ class AgentLoop:
             result = await self.executor.run(step)
             self.memory.commit(step, result)
 
-            # 发射步骤完成事件
+            # 发射步骤完成事件（包含错误信息）
             await self.events.emit(AgentEvent.step_done(step, result))
 
             ok, reason = await self.verifier.check(step, result)
@@ -111,6 +112,22 @@ class AgentLoop:
                 self.memory.remember_error(reason)
 
                 retries = 0
+                user_cancelled = False
+                user_timeout = False
+                # 认证/授权错误重试无意义，直接跳过重试阶段
+                if reason.startswith("[AUTH_ERR]"):
+                    reason = reason.replace("[AUTH_ERR] ", "")
+                    retries = self.config.agent.retry_max
+                # 用户取消 — 跳过重试且不进入 replan
+                if reason.startswith("[USER_CANCELLED]"):
+                    reason = reason.replace("[USER_CANCELLED] ", "")
+                    retries = self.config.agent.retry_max
+                    user_cancelled = True
+                # 用户超时 — 跳过重试但可以 replan
+                if reason.startswith("[USER_TIMEOUT]"):
+                    reason = reason.replace("[USER_TIMEOUT] ", "")
+                    retries = self.config.agent.retry_max
+                    user_timeout = True
                 while retries < self.config.agent.retry_max and not ok:
                     retries += 1
                     await self.events.emit(
@@ -132,10 +149,36 @@ class AgentLoop:
                             reason = "Tool succeeded, overriding verifier mismatch"
 
                 if not ok:
+                    # 用户取消 — 立即失败，不进入 replan
+                    if user_cancelled:
+                        msg = f"用户取消: {reason}"
+                        logger.warning(msg)
+                        await self.events.emit(AgentEvent.error(msg))
+                        task.mark_failed()
+                        await self.events.emit(AgentEvent.task_done(
+                            False, msg, self.state.step_count, 0))
+                        return LoopResult(success=False, task=task, summary=msg)
+
+                    # 用户超时 / 其他失败 — 进入 replan
+                    replan_count += 1
+                    if replan_count > self.config.agent.replan_max:
+                        msg = f"Replan limit exceeded ({self.config.agent.replan_max}), task cannot be completed"
+                        logger.error(msg)
+                        await self.events.emit(AgentEvent.error(msg))
+                        task.mark_failed()
+                        await self.events.emit(AgentEvent.task_done(False, msg, self.state.step_count, 0))
+                        return LoopResult(success=False, task=task, summary=msg)
+
                     context = self.memory.context_for_planner()
-                    new_steps, fallback = await self.planner.replan(task, step, reason, context)
+                    remaining = task.steps[step_index + 1:]  # 失败步骤之后的原始步骤
+                    new_steps, fallback = await self.planner.replan(task, step, reason, context, remaining)
                     if new_steps:
-                        task.steps = task.steps[:step_index] + new_steps
+                        # 保留原始剩余步骤，避免被 replan 截断整个计划
+                        task.steps = task.steps[:step_index] + new_steps + remaining
+                        logger.info(
+                            f"Replan merged: {len(new_steps)} new + {len(remaining)} remaining = "
+                            f"{len(new_steps) + len(remaining)} total steps ahead"
+                        )
                         self.state.record_success()
                         continue
                     else:

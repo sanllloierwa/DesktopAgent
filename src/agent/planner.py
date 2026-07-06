@@ -35,10 +35,34 @@ class Planner:
 8. 系统有自动重试和重新规划机制，失败时会自行生成替代方案，不需要你预先准备
 9. 如果只需一步就能完成任务（如"打开浏览器"），只规划一个步骤
 
+关键规则 — 网页表单操作（DOM 优先）:
+10. 任何需要在网页中填写表单、点击按钮的操作，必须先规划 get_dom 步骤获取页面真实元素
+11. get_dom 之后才能规划 click / type_text 步骤，且选择器必须能从 get_dom 返回的 DOM 中合理推导
+12. 禁止凭空猜测 CSS selector（如 input[name='xxx']），因为实际页面的属性名通常不在你的训练数据中
+13. type_text 和 click 工具支持三种策略，按可靠性排序：text > role > css
+    - text 策略：通过可见标签文本或 placeholder 匹配（最稳定，推荐优先使用）
+    - role 策略：通过 ARIA role 匹配
+    - css 策略：仅当从 get_dom 中已确认元素有明确 id 时才使用
+14. 示例 — 错误: "selector": "input[name='username']", "strategy": "css"
+         正确: "selector": "手机号", "strategy": "text"
+
 关键规则 — 当工具不匹配时:
-10. 如果用户目标需要的操作在可用工具中完全没有对应项，不要强行匹配不相关的工具
-11. 此时应返回空步骤列表并给出 fallback 说明:
+15. 如果用户目标需要的操作在可用工具中完全没有对应项，不要强行匹配不相关的工具
+16. 此时应返回空步骤列表并给出 fallback 说明:
    {"steps": [], "fallback": "无法完成：<具体原因>。建议：<替代方案或需要补充的工具>"}
+
+关键规则 — 请求用户输入:
+17. 如果遇到以下情况，请使用 request_user_input 工具请求用户手动输入:
+    - 页面包含 CAPTCHA 验证码或图片验证码，无法自动识别
+    - 需要输入手机/邮箱收到的验证码（2FA / 多因素认证步骤）
+    - 自动填充失败的表单字段（selector 找不到或 type_text 反复失败）
+    - 需要用户确认的选项或操作（如"是否同意服务条款"）
+    - 需要用户提供的非公开信息（私人账号、密码等）
+18. request_user_input 的 prompt 参数必须清晰说明:
+    - 需要输入什么内容和格式
+    - 为什么需要输入（遇到验证码、需要短信验证码等）
+    - 在哪里可以看到所需信息（如"请查看屏幕中央的验证码图片"）
+19. 使用 request_user_input 后，后续步骤可以直接引用返回的 user_input 数据
 
 输出格式:
 {"steps": [{"tool_name": "...", "params": {...}, "description": "...", "expected_outcome": "...", "retry_policy": "once"}]}"""
@@ -88,20 +112,39 @@ class Planner:
             logger.error(f"Planning failed: {exc}")
             return [], str(exc)
 
-    async def replan(self, task: Task, failed_step: Step, error_reason: str, context: str = "") -> tuple[list[Step], str]:
+    async def replan(self, task: Task, failed_step: Step, error_reason: str, context: str = "", remaining_steps: list[Step] | None = None) -> tuple[list[Step], str]:
         """在某个步骤失败后重新规划后续步骤。返回 (steps, fallback_reason)。"""
         tools_text = self._tool_descriptions()
 
+        # 构建剩余步骤的描述
+        remaining_text = ""
+        if remaining_steps:
+            lines = [f"  {i+1}. [{s.tool_name}] {s.description}" for i, s in enumerate(remaining_steps)]
+            remaining_text = "\n".join(lines)
+        else:
+            remaining_text = "(无)"
+
         user_prompt = f"""用户目标: {task.goal}
 
-一个步骤执行失败了，请规划一个替代步骤来完成任务。
-失败步骤: {failed_step.description}
+一个步骤执行失败了，请规划替代步骤来完成任务。
+
+失败的步骤: {failed_step.description}
+使用的工具: {failed_step.tool_name}
+参数: {failed_step.params}
 失败原因: {error_reason}
 
+原始计划中，失败步骤之后还有 {len(remaining_steps) if remaining_steps else 0} 个步骤:
+{remaining_text}
+
 重要规则:
-- 只规划一个最好的替代步骤，不要规划多个备选方案
-- 如果这一个步骤也失败，系统会再次自动重新规划，不需要你准备回退方案
-- 尝试不同的方法或参数来达成同一目标
+- 规划 1~N 个替代步骤，优先只替换失败的那一步
+- 如果后续原始步骤仍然有效（选择器/URL/参数不依赖失败步骤的输出），只需规划 1 个替代步骤即可，剩余原始步骤会自动保留
+- 如果失败原因暴露了整体思路问题（如整个页面结构与预期不符），可以规划多个步骤一次性替换所有剩余步骤
+- 不要使用与失败步骤相同的工具但只改一个参数值（如 wait_until / timeout），这不会解决问题
+- 网页表单操作：如果失败原因是选择器找不到（如 "locator resolved to 0 elements"），应先规划 get_dom 获取页面真实元素，再用 text 策略定位输入框
+- 如果错误是超时或网络相关（timeout / refused / unreachable / ENOTFOUND）或认证失败（401 / 403 / 无效的令牌），应返回 fallback 说明，不要继续尝试同类操作
+- 如果失败步骤是 request_user_input 且原因包含"用户取消"，应返回 fallback 说明，不要尝试其他工具替代
+- 真正有效的替代方案：换工具、换目标、换定位方式，不是换等待时间
 
 当前上下文:
 {context or '(无)'}
@@ -109,7 +152,7 @@ class Planner:
 可用工具:
 {tools_text}
 
-请规划一个替代步骤 (JSON):"""
+请规划替代步骤，如果实在无法完成则返回 fallback (JSON):"""
 
         try:
             data = await self._call_llm(user_prompt)
@@ -117,14 +160,13 @@ class Planner:
             if fallback:
                 logger.warning(f"Replan cannot recover: {fallback}")
                 return [], fallback
-            # Safety: cap replanned steps to prevent LLM from generating
-            # a long list of fallback alternatives
-            if len(steps) > 2:
+            # Safety: cap replanned steps (replan may legitimately replace
+            # multiple remaining steps, but LLM shouldn't generate > 10)
+            if len(steps) > 10:
                 logger.warning(
-                    f"Replan returned {len(steps)} steps, capping to first 2. "
-                    f"LLM should generate a single best alternative, not multiple fallbacks."
+                    f"Replan returned {len(steps)} steps, capping to first 10."
                 )
-                steps = steps[:2]
+                steps = steps[:10]
             logger.info(f"Replan generated {len(steps)} alternative steps")
             return steps, ""
         except Exception as exc:

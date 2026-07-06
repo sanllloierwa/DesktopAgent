@@ -32,6 +32,7 @@ from src.schemas.task import Task
 from src.tools.base import ToolRegistry
 from src.agent.loop import AgentLoop
 from src.ui.events import AgentEvent, EventType
+from src.tools.interactive.user_input import UserInputBridge, PromptRequest
 from src.utils.llm_factory import create_llm_client
 from src.utils.user_settings import (
     UserSettings,
@@ -169,6 +170,9 @@ class CtkDesktopAgent:
         self.agent_thread: AgentThread | None = None
         self.all_events: list[dict] = []
         self._poll_id: str | None = None
+        self._input_bridge = UserInputBridge.get_instance()
+        self._input_dialog_active: bool = False
+        self._input_dialog: Any = None
 
         # 窗口
         self.root = ctk.CTk()
@@ -414,6 +418,9 @@ class CtkDesktopAgent:
         if self.agent_thread:
             self.agent_thread.stop_task()
         self._stop_polling()
+        if self._input_bridge.has_pending():
+            self._input_bridge.cancel("操作已停止")
+        self._close_input_dialog(self._input_dialog)
         self._add_plan_card("已停止", "stopped")
         self._append_console("已请求停止\n")
         self._set_status("已停止", "#c5221f")
@@ -424,6 +431,9 @@ class CtkDesktopAgent:
             self.agent_thread.stop_task()
             self.agent_thread = None
         self._stop_polling()
+        if self._input_bridge.has_pending():
+            self._input_bridge.cancel("操作已重置")
+        self._close_input_dialog(self._input_dialog)
         self.all_events = []
         self._clear_plan_cards()
         self.console.delete("1.0", "end")
@@ -431,6 +441,106 @@ class CtkDesktopAgent:
         self.task_input.delete("1.0", "end")
         self._set_status("就绪", "gray")
         self.run_btn.configure(state="normal")
+
+    # ==================================================================
+    # 用户输入对话框
+    # ==================================================================
+
+    def _show_input_dialog(self, request: PromptRequest) -> None:
+        """显示请求用户输入的模态对话框"""
+        ctk = self.ctk
+
+        # 如果已有有效对话框，只需更新提示文字
+        if self._input_dialog is not None:
+            try:
+                if self._input_dialog.winfo_exists():
+                    self._input_dialog_label.configure(text=request.prompt)
+                    self._input_dialog_entry.delete("1.0", "end")
+                    self._input_dialog_entry.focus_set()
+                    return
+            except Exception:
+                pass
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("用户输入")
+        dialog.geometry("520x320")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.resizable(False, False)
+
+        # 居中于父窗口
+        dialog.update_idletasks()
+        px = self.root.winfo_x()
+        py = self.root.winfo_y()
+        pw = self.root.winfo_width()
+        ph = self.root.winfo_height()
+        dw, dh = 520, 320
+        dialog.geometry(f"+{px + (pw - dw) // 2}+{py + (ph - dh) // 2}")
+
+        header = ctk.CTkFrame(dialog, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=(20, 5))
+
+        ctk.CTkLabel(
+            header, text="Agent 需要您的输入",
+            font=ctk.CTkFont(size=15, weight="bold"), anchor="w",
+        ).pack(anchor="w")
+
+        label = ctk.CTkLabel(
+            dialog, text=request.prompt,
+            font=ctk.CTkFont(size=13), wraplength=480, justify="left", anchor="w",
+        )
+        label.pack(fill="x", padx=20, pady=(5, 12))
+
+        entry = ctk.CTkTextbox(dialog, height=90, font=ctk.CTkFont(size=13))
+        entry.pack(fill="x", padx=20, pady=(0, 12))
+        entry.focus_set()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 15))
+
+        ctk.CTkButton(
+            btn_frame, text="确认 (Enter)", width=110,
+            command=lambda: self._on_input_submit(dialog, entry),
+        ).pack(side="right", padx=(8, 0))
+
+        ctk.CTkButton(
+            btn_frame, text="取消 (Esc)", width=100,
+            fg_color="gray", hover_color="#666",
+            command=lambda: self._on_input_cancel(dialog),
+        ).pack(side="right")
+
+        dialog.bind("<Return>", lambda e: self._on_input_submit(dialog, entry))
+        dialog.bind("<Escape>", lambda e: self._on_input_cancel(dialog))
+        dialog.protocol("WM_DELETE_WINDOW", lambda: self._on_input_cancel(dialog))
+
+        self._input_dialog = dialog
+        self._input_dialog_label = label
+        self._input_dialog_entry = entry
+        self._input_dialog_active = True
+
+    def _on_input_submit(self, dialog: Any, entry: Any) -> None:
+        """对话框确认按钮回调"""
+        text = entry.get("1.0", "end-1c").strip()
+        if not text:
+            return
+        self._input_bridge.respond(text)
+        self._close_input_dialog(dialog)
+
+    def _on_input_cancel(self, dialog: Any) -> None:
+        """对话框取消按钮回调"""
+        self._input_bridge.cancel()
+        self._close_input_dialog(dialog)
+
+    def _close_input_dialog(self, dialog: Any) -> None:
+        """清理对话框资源"""
+        try:
+            if dialog and dialog.winfo_exists():
+                dialog.grab_release()
+                dialog.destroy()
+        except Exception:
+            pass
+        self._input_dialog = None
+        self._input_dialog_active = False
 
     # ==================================================================
     # Polling: 从后台线程拉取事件，渲染到 UI
@@ -451,6 +561,14 @@ class CtkDesktopAgent:
 
         for e in new_events:
             self._render_event(e)
+
+        # 检查是否有待处理的用户输入请求
+        if self._input_bridge.has_pending() and not self._input_dialog_active:
+            pending = self._input_bridge.get_pending()
+            if pending:
+                self._input_dialog_active = True
+                self._append_console(f"[INPUT] 等待用户输入: {pending.prompt}\n")
+                self.root.after(0, self._show_input_dialog, pending)
 
         if self.agent_thread.is_alive():
             self._poll_id = self.root.after(300, self._poll)
@@ -550,6 +668,9 @@ class CtkDesktopAgent:
     def _on_close(self) -> None:
         if self.agent_thread:
             self.agent_thread.stop_task()
+        if self._input_bridge.has_pending():
+            self._input_bridge.cancel("窗口关闭")
+        self._close_input_dialog(self._input_dialog)
         self.root.destroy()
 
     # ==================================================================

@@ -17,6 +17,7 @@ class AgentConfig(BaseModel):
     max_steps: int = 20
     step_timeout: int = 60
     retry_max: int = 3
+    replan_max: int = 5
     screenshot_on_error: bool = True
 
 

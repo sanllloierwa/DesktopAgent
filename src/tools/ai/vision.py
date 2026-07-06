@@ -78,4 +78,8 @@ class AnalyzeScreenTool(BaseTool):
             return {"success": True, "summary": f"Analysis: {answer[:200]}...", "answer": answer}
         except Exception as exc:
             logger.error(f"Vision analysis failed: {exc}")
-            return {"success": False, "error": str(exc)}
+            err_msg = str(exc)
+            # 标记认证错误 — 重试不会解决，应跳过重试直接 fallback
+            if "401" in err_msg or "403" in err_msg or "无效的令牌" in err_msg or "Invalid token" in err_msg.lower():
+                err_msg = "[AUTH_ERR] " + err_msg
+            return {"success": False, "error": err_msg}

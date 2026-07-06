@@ -153,25 +153,35 @@ class ClickTool(BaseTool):
 class TypeTextTool(BaseTool):
     schema = ToolSchema(
         name="type_text",
-        description="在输入框中输入文本",
+        description="在输入框中输入文本。支持 CSS selector、文本匹配、role 三种定位策略。优先使用 text 策略（通过 placeholder 或 label 文本定位），避免猜测 CSS selector",
         parameters={
             "type": "object",
             "properties": {
-                "selector": {"type": "string", "description": "输入框的 CSS selector"},
+                "selector": {"type": "string", "description": "定位选择器：CSS selector、可见文本、或 role 名称"},
                 "text": {"type": "string", "description": "要输入的文字"},
+                "strategy": {
+                    "type": "string",
+                    "description": "定位策略: css | text | role。优先使用 text（根据 placeholder/label 匹配）",
+                    "enum": ["css", "text", "role"],
+                },
                 "delay": {"type": "number", "description": "每个字符间延迟毫秒"},
             },
-            "required": ["selector", "text"],
+            "required": ["selector", "text", "strategy"],
         },
     )
 
-    async def execute(self, selector: str, text: str, delay: int = 50) -> dict:
+    async def execute(self, selector: str, text: str, strategy: str = "css", delay: int = 50) -> dict:
         page = await _get_page()
         try:
-            locator = page.locator(selector)
-            await locator.click()
-            await locator.fill("")
-            await locator.type(text, delay=delay)
+            if strategy == "text":
+                locator = page.get_by_text(selector, exact=False)
+            elif strategy == "role":
+                locator = page.get_by_role(selector)
+            else:
+                locator = page.locator(selector)
+            await locator.first.click(timeout=5000)
+            await locator.first.fill("")
+            await locator.first.type(text, delay=delay)
             return {"success": True, "summary": f"Typed {len(text)} chars into '{selector}'"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}

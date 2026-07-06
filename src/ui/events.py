@@ -52,13 +52,19 @@ class AgentEvent:
 
     @classmethod
     def step_done(cls, step: Step, result: ActionResult) -> "AgentEvent":
+        msg = f"{'OK' if result.success else 'FAIL'}: {step.description}"
+        if not result.success and result.error:
+            # 截断过长错误信息，保留关键内容
+            err = result.error[:120] + "..." if len(result.error or "") > 120 else result.error
+            msg += f" — {err}"
         return cls(
             type=EventType.STEP_DONE,
-            message=f"{'OK' if result.success else 'FAIL'}: {step.description}",
+            message=msg,
             data={
                 "step_id": step.id,
                 "success": result.success,
                 "summary": result.summary,
+                "error": result.error,
                 "duration_ms": result.duration_ms,
                 "screenshot_base64": result.screenshot_base64,
             },
