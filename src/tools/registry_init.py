@@ -28,6 +28,7 @@ from src.tools.browser.navigate import (
     ScreenshotTool,
     GetDOMTool,
     ExtractTextTool,
+    CheckLoginStatusTool,
 )
 
 # AI tools
@@ -69,6 +70,7 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     registry.register(ScreenshotTool())
     registry.register(GetDOMTool())
     registry.register(ExtractTextTool())
+    registry.register(CheckLoginStatusTool())
 
     # --- AI ---
     registry.register(GenerateArticleTool())

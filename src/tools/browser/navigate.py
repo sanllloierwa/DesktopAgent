@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Any
 
 from loguru import logger
 
 from src.tools.base import BaseTool, ToolSchema
 from src.utils.config import load_config
+
+
+def _text_pattern(selector: str) -> re.Pattern[str]:
+    if selector in {"获取验证码", "发送验证码", "获取短信验证码", "发送短信验证码"}:
+        return re.compile(r"(获取|发送|收取).{0,6}(验证码|校验码)|短信验证码", re.IGNORECASE)
+    return re.compile(re.escape(selector), re.IGNORECASE)
 
 
 async def _try_connect_cdp(pw, max_retries: int = 10, delay: float = 0.5):
@@ -138,7 +145,7 @@ class ClickTool(BaseTool):
         page = await _get_page()
         try:
             if strategy == "text":
-                locator = page.get_by_text(selector, exact=False)
+                return await self._click_by_text(page, selector, timeout)
             elif strategy == "role":
                 locator = page.get_by_role(selector)
             else:
@@ -147,7 +154,104 @@ class ClickTool(BaseTool):
             await locator.first.click(timeout=timeout)
             return {"success": True, "summary": f"Clicked '{selector}'"}
         except Exception as exc:
-            return {"success": False, "error": str(exc)}
+            return {"success": False, "error": await self._format_click_error(page, exc)}
+
+    async def _click_by_text(self, page: Any, selector: str, timeout: int) -> dict:
+        pattern = _text_pattern(selector)
+        marker = await page.evaluate(
+            """
+            ({ selector, patternSource }) => {
+                const matcher = new RegExp(patternSource, 'i');
+                const clickableSelector = 'button, a, [role=button], input[type=button], input[type=submit]';
+                const elements = Array.from(document.querySelectorAll(clickableSelector));
+                const candidates = elements.map((el, index) => {
+                    const style = window.getComputedStyle(el);
+                    const rect = el.getBoundingClientRect();
+                    const text = (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim();
+                    const visible = style.visibility !== 'hidden' && style.display !== 'none' &&
+                        rect.width > 0 && rect.height > 0;
+                    const disabled = Boolean(
+                        el.disabled ||
+                        el.hasAttribute('disabled') ||
+                        el.getAttribute('aria-disabled') === 'true' ||
+                        /(^|\\s)(disabled|Button--disabled|is-disabled)(\\s|$)/i.test(el.className || '')
+                    );
+                    let score = 0;
+                    if (visible) score += 100;
+                    if (!disabled) score += 100;
+                    if (text === selector) score += 80;
+                    if (text.includes(selector)) score += 40;
+                    if (el.tagName.toLowerCase() === 'button') score += 30;
+                    if (el.tagName.toLowerCase() === 'input') score += 25;
+                    if ((el.getAttribute('type') || '').toLowerCase() === 'submit') score += 20;
+                    score -= Math.min(text.length, 80);
+                    return { el, index, text, visible, disabled, score };
+                }).filter(item => item.visible && item.text && matcher.test(item.text));
+
+                candidates.sort((a, b) => b.score - a.score);
+                const best = candidates[0];
+                if (!best) {
+                    return {
+                        ok: false,
+                        error: `No visible clickable element matched '${selector}'`,
+                        candidates: candidates.map(({ text, disabled, score }) => ({ text, disabled, score })),
+                    };
+                }
+                if (best.disabled) {
+                    return {
+                        ok: false,
+                        error: `Best match for '${selector}' is disabled: ${best.text}`,
+                        candidates: candidates.map(({ text, disabled, score }) => ({ text, disabled, score })),
+                    };
+                }
+                const marker = `agent-click-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                best.el.setAttribute('data-agent-click-marker', marker);
+                return {
+                    ok: true,
+                    marker,
+                    text: best.text,
+                    candidates: candidates.slice(0, 8).map(({ text, disabled, score }) => ({ text, disabled, score })),
+                };
+            }
+            """,
+            {"selector": selector, "patternSource": pattern.pattern},
+        )
+        if not marker.get("ok"):
+            return {"success": False, "error": f"{marker.get('error')}\nVisible clickable candidates: {marker.get('candidates', [])}"}
+
+        await page.locator(f'[data-agent-click-marker="{marker["marker"]}"]').click(timeout=timeout)
+        return {
+            "success": True,
+            "summary": f"Clicked '{selector}' via candidate '{marker.get('text', '')}'",
+            "clicked_text": marker.get("text", ""),
+            "candidates": marker.get("candidates", []),
+        }
+
+    async def _format_click_error(self, page: Any, exc: Exception) -> str:
+        try:
+            candidates = await page.evaluate(
+                """
+                () => Array.from(document.querySelectorAll('button, a, [role=button], input[type=button], input[type=submit]'))
+                    .filter(el => {
+                        const style = window.getComputedStyle(el);
+                        const rect = el.getBoundingClientRect();
+                        return style.visibility !== 'hidden' && style.display !== 'none' &&
+                            rect.width > 0 && rect.height > 0;
+                    })
+                    .slice(0, 30)
+                    .map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        text: (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || '').trim().slice(0, 80),
+                        disabled: Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true'),
+                    }))
+                    .filter(item => item.text)
+                """
+            )
+            if candidates:
+                return f"{exc}\nVisible clickable candidates: {candidates}"
+        except Exception:
+            pass
+        return str(exc)
 
 
 class TypeTextTool(BaseTool):
@@ -174,7 +278,14 @@ class TypeTextTool(BaseTool):
         page = await _get_page()
         try:
             if strategy == "text":
-                locator = page.get_by_text(selector, exact=False)
+                name_pattern = re.compile(re.escape(selector), re.IGNORECASE)
+                locator = page.get_by_placeholder(name_pattern).or_(
+                    page.get_by_label(name_pattern)
+                ).or_(
+                    page.get_by_role("textbox", name=name_pattern)
+                ).or_(
+                    page.locator("input, textarea").filter(has_text=name_pattern)
+                )
             elif strategy == "role":
                 locator = page.get_by_role(selector)
             else:
@@ -238,6 +349,7 @@ class GetDOMTool(BaseTool):
             script = """
             (maxDepth) => {
                 const interactive = ['a', 'button', 'input', 'select', 'textarea', 'form'];
+                const usefulAttrs = ['type', 'name', 'placeholder', 'aria-label', 'role', 'autocomplete', 'disabled', 'checked', 'aria-disabled', 'aria-checked', 'value'];
                 function walk(el, d) {
                     if (d > maxDepth) return '';
                     const tag = el.tagName ? el.tagName.toLowerCase() : '';
@@ -246,6 +358,10 @@ class GetDOMTool(BaseTool):
                     if (el.id) line += ' id="' + el.id + '"';
                     if (el.className && typeof el.className === 'string')
                         line += ' class="' + el.className.split(' ').slice(0,3).join(' ') + '"';
+                    for (const attr of usefulAttrs) {
+                        const value = el.getAttribute && el.getAttribute(attr);
+                        if (value) line += ' ' + attr + '="' + value.slice(0, 80) + '"';
+                    }
                     const text = (el.textContent || '').trim().slice(0, 60);
                     if (text && interactive.includes(tag))
                         line += '>' + text.replace(/\\s+/g, ' ');
@@ -283,5 +399,81 @@ class ExtractTextTool(BaseTool):
             else:
                 text = await page.inner_text("body")
             return {"success": True, "summary": text[:5000]}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+
+class CheckLoginStatusTool(BaseTool):
+    schema = ToolSchema(
+        name="check_login_status",
+        description=(
+            "检查当前网页是否已经登录。用于登录任务中避免重复登录；"
+            "如果已登录会返回 task_complete=true，Agent 应提前完成任务。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "platform": {
+                    "type": "string",
+                    "description": "平台名称，如 zhihu / generic",
+                    "enum": ["zhihu", "generic"],
+                },
+            },
+            "required": ["platform"],
+        },
+    )
+
+    async def execute(self, platform: str = "generic") -> dict:
+        page = await _get_page()
+        try:
+            status = await page.evaluate(
+                """
+                (platform) => {
+                    const text = document.body ? document.body.innerText : '';
+                    const href = location.href;
+                    const clickable = Array.from(document.querySelectorAll(
+                        'button, a, [role=button], input[type=button], input[type=submit]'
+                    )).map(el => (
+                        el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || ''
+                    ).trim()).filter(Boolean);
+
+                    if (platform === 'zhihu') {
+                        const hasLoginDialog = /登录知乎|验证码登录|密码登录|获取验证码|短信验证码/.test(text);
+                        const hasLoginEntry = clickable.some(t => /^登录$/.test(t) || t.includes('登录知乎'));
+                        const hasUserSignals = Boolean(
+                            document.querySelector('[href*="/people/"], [aria-label*="个人"], [aria-label*="头像"], img[alt*="头像"]')
+                        ) || /创作中心|消息|私信|我的主页|退出登录/.test(text);
+                        const loggedIn = hasUserSignals && !hasLoginDialog;
+                        return {
+                            loggedIn,
+                            reason: loggedIn
+                                ? 'Detected Zhihu user controls and no login dialog'
+                                : `Not logged in or login dialog visible. loginEntry=${hasLoginEntry}, loginDialog=${hasLoginDialog}`,
+                            clickable: clickable.slice(0, 20),
+                            href,
+                        };
+                    }
+
+                    const loginWords = /登录|登陆|sign in|log in/i;
+                    const logoutWords = /退出|注销|logout|log out/i;
+                    const loggedIn = logoutWords.test(text) || !clickable.some(t => loginWords.test(t));
+                    return {
+                        loggedIn,
+                        reason: loggedIn ? 'Generic login signal detected' : 'Generic login entry still visible',
+                        clickable: clickable.slice(0, 20),
+                        href,
+                    };
+                }
+                """,
+                platform,
+            )
+            logged_in = bool(status.get("loggedIn"))
+            return {
+                "success": True,
+                "summary": "Already logged in" if logged_in else "Login required",
+                "logged_in": logged_in,
+                "task_complete": logged_in,
+                "status": status,
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
