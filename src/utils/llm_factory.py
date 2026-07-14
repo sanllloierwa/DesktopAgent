@@ -147,15 +147,14 @@ def create_llm_client(config: AppConfig | None = None, provider_override: str | 
 def create_vision_client(config: AppConfig | None = None) -> Any:
     """创建视觉分析专用客户端，读取 config.vision 配置
 
-    配置优先级: 用户设置(UI保存) > YAML vision 配置
+    视觉模型与 UI 中选择的主模型相互独立。主模型可以是 DeepSeek，
+    截图仍固定交给 vision.provider（默认 Agnes）处理。
     """
     if config is None:
         config = load_config()
 
-    from src.utils.user_settings import get_user_settings
-    us = get_user_settings()
-    provider = us.default_provider or config.vision.provider
-    model = us.default_model or config.vision.model
+    provider = config.vision.provider
+    model = config.vision.model
     base_url = getattr(config.vision, "base_url", "") or ""
 
     return _create_client(provider, model, base_url)

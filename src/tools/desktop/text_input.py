@@ -2,22 +2,21 @@
 
 from __future__ import annotations
 
-import subprocess
 import time
-from typing import Any
 
 from src.tools.base import BaseTool, ToolSchema
 
 
 def _set_clipboard(text: str) -> None:
-    """将文本放入 Windows 剪贴板（通过 clip.exe）"""
-    subprocess.run(
-        ["clip.exe"],
-        input=text,
-        encoding="utf-8",
-        shell=True,
-        check=False,
-    )
+    """使用 Win32 Unicode 剪贴板写入文本，避免本地代码页造成中文乱码。"""
+    import win32clipboard
+
+    win32clipboard.OpenClipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardData(win32clipboard.CF_UNICODETEXT, text)
+    finally:
+        win32clipboard.CloseClipboard()
 
 
 def _paste_via_ctrl_v() -> None:

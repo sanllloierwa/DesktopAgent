@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from typing import Any
 
 from loguru import logger
 
 from src.tools.base import BaseTool, ToolSchema
+
+_WORD_COM_UNAVAILABLE = (
+    "[ENV_ERR] Cannot get Word/WPS COM application. Install pywin32 and ensure "
+    "Microsoft Word or WPS Writer is installed with COM automation registered."
+)
+
+# WdBuiltinStyle values. Use numeric IDs instead of localized names such as
+# "Normal" / "Heading 1", which are not guaranteed to exist in Chinese Word.
+_WD_STYLE_NORMAL = -1
+_WD_STYLE_HEADING_1 = -2
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +60,53 @@ def _get_word_app():
         return None
 
 
+def _word_com_error() -> str:
+    try:
+        import win32com.client  # noqa: F401
+    except ImportError as exc:
+        return f"[ENV_ERR] Missing dependency: {exc}. Install pywin32 in the Python environment running Agent."
+    return _WORD_COM_UNAVAILABLE
+
+
+def _markdown_to_word_text(text: str) -> str:
+    lines: list[str] = []
+    in_code_block = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+
+        if not in_code_block:
+            heading = re.match(r"^\s{0,3}#{1,6}\s+(.*)$", line)
+            if heading:
+                line = heading.group(1).strip()
+
+            line = re.sub(r"^\s*[-*+]\s+", "- ", line)
+            line = re.sub(r"^\s*>+\s?", "", line)
+            line = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", line)
+            line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+            line = re.sub(r"(\*\*|__)(.*?)\1", r"\2", line)
+            line = re.sub(r"(\*|_)(.*?)\1", r"\2", line)
+            line = re.sub(r"`([^`]+)`", r"\1", line)
+
+            if "|" in line and re.match(r"^\s*\|?[-:|\s]+\|?\s*$", line):
+                continue
+            if "|" in line:
+                cells = [cell.strip() for cell in line.strip("|").split("|")]
+                if len(cells) > 1:
+                    line = "    ".join(cells)
+
+        lines.append(line.strip() if not in_code_block else line)
+
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
@@ -66,7 +124,7 @@ class CreateDocumentTool(BaseTool):
     async def execute(self) -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application. Is WPS/Word running?"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
             app.Visible = True
@@ -96,24 +154,33 @@ class WriteTextTool(BaseTool):
                     "description": "段落样式: heading | body（默认 body）",
                     "enum": ["heading", "body"],
                 },
+                "content_format": {
+                    "type": "string",
+                    "description": "输入文本格式: auto | plain_text | markdown。写入 Word/WPS 时默认自动清理 Markdown 标记。",
+                    "enum": ["auto", "plain_text", "markdown"],
+                },
             },
             "required": ["text"],
         },
     )
 
-    async def execute(self, text: str, style: str = "body") -> dict:
+    async def execute(self, text: str, style: str = "body", content_format: str = "auto") -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
+            looks_like_markdown = bool(
+                re.search(r"(^#{1,6}\s)|(\*\*[^*]+\*\*)|(```)|(\[[^\]]+\]\([^)]+\))", text, re.MULTILINE)
+            )
+            if content_format == "markdown" or (content_format == "auto" and looks_like_markdown):
+                text = _markdown_to_word_text(text)
+
             doc = app.ActiveDocument
             selection = app.Selection
 
-            if style == "heading":
-                selection.Style = doc.Styles("Heading 1")
-            else:
-                selection.Style = doc.Styles("Normal")
+            builtin_style = _WD_STYLE_HEADING_1 if style == "heading" else _WD_STYLE_NORMAL
+            selection.Style = doc.Styles(builtin_style)
 
             selection.TypeText(text)
             selection.TypeParagraph()
@@ -158,7 +225,7 @@ class SetFontTool(BaseTool):
     ) -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
             if select_all:
@@ -204,7 +271,7 @@ class SetAlignmentTool(BaseTool):
     async def execute(self, align: str = "left") -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
             from win32com.client import constants
@@ -239,7 +306,7 @@ class SaveDocumentTool(BaseTool):
     async def execute(self, filepath: str = "") -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
             doc = app.ActiveDocument
@@ -275,7 +342,7 @@ class ExportPDFTool(BaseTool):
     async def execute(self, filepath: str = "") -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         try:
             doc = app.ActiveDocument
@@ -312,7 +379,7 @@ class InsertImageTool(BaseTool):
     async def execute(self, image_path: str) -> dict:
         app = _get_word_app()
         if app is None:
-            return {"success": False, "error": "Cannot get Word/WPS COM application"}
+            return {"success": False, "error": _word_com_error()}
 
         if not os.path.exists(image_path):
             return {"success": False, "error": f"Image not found: {image_path}"}

@@ -55,7 +55,14 @@ class BaseTool(ABC):
                 success = result.pop("success")
                 error = result.pop("error", None)
                 summary = result.pop("summary", "")
-                return {"success": success, "error": error, "summary": summary, "data": result}
+                screenshot = result.pop("screenshot_base64", None)
+                return {
+                    "success": success,
+                    "error": error,
+                    "summary": summary,
+                    "screenshot_base64": screenshot,
+                    "data": result,
+                }
             return {"success": True, "error": None, "data": result}
         except Exception as exc:
             logger.error(f"[{self.schema.name}] execution failed: {exc}")

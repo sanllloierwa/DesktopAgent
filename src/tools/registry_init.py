@@ -10,6 +10,14 @@ from src.tools.base import ToolRegistry
 from src.tools.desktop.app_control import LaunchAppTool, CloseAppTool
 from src.tools.desktop.screen_capture import DesktopScreenshotTool
 from src.tools.desktop.text_input import DesktopTypeTextTool
+from src.tools.desktop.native_control import (
+    DesktopClickTool,
+    DesktopDragTool,
+    DesktopKeypressTool,
+    DesktopMoveMouseTool,
+    DesktopScrollTool,
+    FocusWindowTool,
+)
 from src.tools.desktop.wps_com import (
     CreateDocumentTool,
     WriteTextTool,
@@ -33,7 +41,7 @@ from src.tools.browser.navigate import (
 
 # AI tools
 from src.tools.ai.text_gen import GenerateArticleTool, SummarizeTool
-from src.tools.ai.vision import AnalyzeScreenTool
+from src.tools.ai.vision import AnalyzeScreenTool, LocateScreenElementTool
 
 # Interactive tools
 from src.tools.interactive.user_input import RequestUserInputTool
@@ -54,6 +62,12 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     registry.register(LaunchAppTool(discovered_apps=discovered_apps))
     registry.register(CloseAppTool(discovered_apps=discovered_apps))
     registry.register(DesktopScreenshotTool())
+    registry.register(FocusWindowTool())
+    registry.register(DesktopKeypressTool())
+    registry.register(DesktopClickTool())
+    registry.register(DesktopMoveMouseTool())
+    registry.register(DesktopScrollTool())
+    registry.register(DesktopDragTool())
     registry.register(DesktopTypeTextTool())
     registry.register(CreateDocumentTool())
     registry.register(WriteTextTool())
@@ -76,6 +90,7 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     registry.register(GenerateArticleTool())
     registry.register(SummarizeTool())
     registry.register(AnalyzeScreenTool())
+    registry.register(LocateScreenElementTool())
 
     # --- Interactive ---
     registry.register(RequestUserInputTool())

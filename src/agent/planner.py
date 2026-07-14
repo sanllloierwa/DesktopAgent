@@ -34,6 +34,39 @@ class Planner:
 7. 禁止生成"如果 X 失败则尝试 Y"或"尝试 A→若不行用 B"这类回退步骤
 8. 系统有自动重试和重新规划机制，失败时会自行生成替代方案，不需要你预先准备
 9. 如果只需一步就能完成任务（如"打开浏览器"），只规划一个步骤
+9a. 当用户目标是 Word/WPS/docx 文档时，generate_article 必须使用 {"output_format": "plain_text"}；
+    写入 Word/WPS 时使用 write_document_text，content_format 使用 "auto" 或 "plain_text"，
+    不要把 Markdown 标记（#、**、```、| 表格等）写入 Word 文档。
+9b. 当任务需要看屏幕、识别图形界面或根据截图判断状态时，先调用 desktop_screenshot，
+    再调用 analyze_screen，并将 image_base64 设置为 "{{desktop_screenshot.screenshot_base64}}"。
+    analyze_screen 会通过 MCP 将图片交给 Agnes 视觉模型；主模型不直接读取 base64 图片。
+
+关键规则 — 原生桌面应用:
+9c. 浏览器工具 click、type_text、get_dom 只能操作 Playwright 浏览器页面，严禁用于微信、Word、记事本等原生桌面窗口。
+9d. 操作原生应用前先调用 focus_window；使用 desktop_keypress 发送快捷键/Enter/Tab，使用 desktop_type_text 粘贴文本。
+9e. 需要视觉坐标点击时，必须严格规划以下链路，不能从 analyze_screen 的自然语言回答中猜坐标：
+    禁止根据自然语言描述或历史截图臆造坐标。
+    1) desktop_screenshot 获取图片及 width/height/left/top；
+    2) locate_screen_element 定位目标，参数必须引用：
+       image_base64="{{desktop_screenshot.screenshot_base64}}"、
+       image_width="{{desktop_screenshot.width}}"、image_height="{{desktop_screenshot.height}}"、
+       screen_left="{{desktop_screenshot.left}}"、screen_top="{{desktop_screenshot.top}}"；
+    3) desktop_click 的 x/y/confidence 必须分别引用
+       "{{locate_screen_element.x}}"、"{{locate_screen_element.y}}"、"{{locate_screen_element.confidence}}"；
+    4) 点击后重新 desktop_screenshot + analyze_screen，验证界面变化。
+    定位失败、低置信度或坐标越界时不要点击，应重新截图或请求用户确认。
+9e-1. desktop_move_mouse 用于悬停，desktop_scroll 用于滚动，desktop_drag 用于拖拽；执行后同样必须重新截图验证。
+9e-2. 发送、删除、发布、支付等操作只有在用户目标明确要求时才能执行；否则点击最终确认按钮前调用 request_user_input。
+9f. 对“打开并登录微信后进入群聊发送消息”的任务，规划必须形成以下闭环：
+    - launch_app 启动微信，focus_window 聚焦微信，然后截图并分析登录状态；
+    - 如果任务明确要求登录，使用 request_user_input 请用户在微信客户端完成扫码或手机确认，完成后仅回复“已登录”；
+      不要询问登录方式，不要索要微信账号、手机号或密码；
+    - 用户确认后重新 focus_window、截图并分析，确认已经进入微信主界面；
+    - focus_window 后用 desktop_keypress(ctrl+f) 打开搜索，desktop_keypress(ctrl+a) 清空搜索框，
+      desktop_type_text 输入目标群名，desktop_keypress(enter) 进入群聊；
+    - 截图并分析，确认当前聊天标题与目标群名一致；
+    - focus_window 后用 desktop_type_text 输入消息正文，再用 desktop_keypress(enter) 提交发送；
+    - 最后截图并分析消息是否出现在聊天记录中。最后一步不能停在登录状态、搜索结果或待发送输入框。
 
 关键规则 — 网页表单操作（DOM 优先）:
 10. 任何需要在网页中填写表单、点击按钮的操作，必须先规划 get_dom 步骤获取页面真实元素
@@ -126,14 +159,25 @@ class Planner:
             if fallback:
                 logger.warning(f"Planner cannot fulfill task: {fallback}")
                 return [], fallback
+            violation = self._goal_violation(task, steps)
+            if violation:
+                logger.warning(f"Planner produced goal-violating plan: {violation}")
+                return [], violation
             logger.info(f"Planner generated {len(steps)} steps for task '{task.goal[:50]}...'")
             return steps, ""
         except Exception as exc:
             logger.error(f"Planning failed: {exc}")
             return [], str(exc)
 
-    async def replan(self, task: Task, failed_step: Step, error_reason: str, context: str = "", remaining_steps: list[Step] | None = None) -> tuple[list[Step], str]:
-        """在某个步骤失败后重新规划后续步骤。返回 (steps, fallback_reason)。"""
+    async def replan(
+        self,
+        task: Task,
+        failed_step: Step,
+        error_reason: str,
+        context: str = "",
+        remaining_steps: list[Step] | None = None,
+    ) -> tuple[list[Step], str, bool]:
+        """重新规划失败步骤，返回 (steps, fallback_reason, preserve_remaining)。"""
         tools_text = self._tool_descriptions()
 
         # 构建剩余步骤的描述
@@ -158,8 +202,11 @@ class Planner:
 
 重要规则:
 - 规划 1~N 个替代步骤，优先只替换失败的那一步
-- 如果后续原始步骤仍然有效（选择器/URL/参数不依赖失败步骤的输出），只需规划 1 个替代步骤即可，剩余原始步骤会自动保留
-- 如果失败原因暴露了整体思路问题（如整个页面结构与预期不符），可以规划多个步骤一次性替换所有剩余步骤
+- 返回 preserve_remaining=true 表示替代步骤只修复当前失败，原始后续步骤仍有效，应继续执行
+- 返回 preserve_remaining=false 表示返回的步骤已经完整替换从失败点开始的全部流程，原始后续步骤必须丢弃
+- 如果后续原始步骤仍然有效（选择器/URL/参数不依赖失败步骤的输出），通常只需规划 1 个替代步骤并设置 preserve_remaining=true
+- 如果失败原因暴露了整体思路问题（如整个页面结构与预期不符），应规划完整的新后续流程并设置 preserve_remaining=false
+- 替代步骤必须真正实现失败步骤的预期结果；只截图、分析或检查状态但没有完成原操作，不是有效替代方案
 - 不要使用与失败步骤相同的工具但只改一个参数值（如 wait_until / timeout），这不会解决问题
 - 网页表单操作：如果失败原因是选择器找不到（如 "locator resolved to 0 elements"），应先规划 get_dom 获取页面真实元素，再用 text 策略定位输入框
 - 如果错误是超时或网络相关（timeout / refused / unreachable / ENOTFOUND）或认证失败（401 / 403 / 无效的令牌），应返回 fallback 说明，不要继续尝试同类操作
@@ -167,6 +214,9 @@ class Planner:
 - 如果密码输入失败且 DOM/页面是验证码登录，应改走手机号 + 短信验证码流程，不要继续寻找密码框
 - 如果"获取验证码/发送验证码"按钮点击失败，不要请求用户输入短信验证码；应先 get_dom 检查按钮真实文本、禁用状态或人机验证提示。若存在 CAPTCHA/滑块/安全验证，则请求用户手动完成验证并确认。
 - 如果登录按钮点击后页面无变化，应 get_dom 检查协议勾选、人机验证、按钮禁用状态或错误提示，不要直接判定任务完成。
+- 原生桌面应用不能使用浏览器 click/type_text/get_dom。微信任务应使用 focus_window、desktop_keypress、desktop_type_text、desktop_screenshot 和 analyze_screen。
+- 视觉坐标操作必须使用 desktop_screenshot → locate_screen_element → desktop_click → desktop_screenshot → analyze_screen；禁止根据自然语言描述或历史截图臆造坐标。
+- 微信消息任务的替代计划必须最终进入目标聊天、输入消息并用 Enter 提交；仅截图或判断登录状态不是有效恢复。
 - 真正有效的替代方案：换工具、换目标、换定位方式，不是换等待时间
 
 当前上下文:
@@ -175,14 +225,21 @@ class Planner:
 可用工具:
 {tools_text}
 
-请规划替代步骤，如果实在无法完成则返回 fallback (JSON):"""
+请规划替代步骤，如果实在无法完成则返回 fallback。
+JSON 格式：
+{{"steps": [{{"tool_name": "...", "params": {{}}, "description": "...", "expected_outcome": "..."}}], "preserve_remaining": true/false}}
+或 {{"steps": [], "fallback": "无法恢复的原因", "preserve_remaining": false}}:"""
 
         try:
             data = await self._call_llm(user_prompt)
-            steps, fallback = self._parse_steps(data)
+            steps, fallback, preserve_remaining = self._parse_replan(data)
             if fallback:
                 logger.warning(f"Replan cannot recover: {fallback}")
-                return [], fallback
+                return [], fallback, False
+            violation = self._goal_violation(task, steps)
+            if violation:
+                logger.warning(f"Replan produced goal-violating plan: {violation}")
+                return [], violation, False
             # Safety: cap replanned steps (replan may legitimately replace
             # multiple remaining steps, but LLM shouldn't generate > 10)
             if len(steps) > 10:
@@ -191,10 +248,10 @@ class Planner:
                 )
                 steps = steps[:10]
             logger.info(f"Replan generated {len(steps)} alternative steps")
-            return steps, ""
+            return steps, "", preserve_remaining
         except Exception as exc:
             logger.error(f"Replan failed: {exc}")
-            return [], str(exc)
+            return [], str(exc), False
 
     async def _call_llm(self, user_prompt: str) -> dict[str, Any]:
         """调用 LLM，返回解析后的 JSON"""
@@ -212,6 +269,22 @@ class Planner:
             if text.startswith("json"):
                 text = text[4:]
         return json.loads(text)
+
+    def _goal_violation(self, task: Task, steps: list[Step]) -> str:
+        goal = task.goal.lower()
+        requires_word = any(word in goal for word in ("word", "wps", "docx", "word文档", "word 文档"))
+        if not requires_word:
+            return ""
+
+        for step in steps:
+            params_text = json.dumps(step.params, ensure_ascii=False).lower()
+            text = f"{step.tool_name} {step.description} {params_text}".lower()
+            if "notepad" in text or "记事本" in text:
+                return (
+                    "用户目标要求 Word/WPS 文档，不能自动降级为记事本。"
+                    "请安装/配置 Word 或 WPS，或明确允许改用记事本。"
+                )
+        return ""
 
     def _parse_steps(self, data: dict[str, Any]) -> tuple[list[Step], str]:
         """将 LLM 输出转为 Step 对象列表。返回 (steps, fallback_reason)。"""
@@ -231,3 +304,12 @@ class Planner:
                 retry_policy=retry,
             ))
         return steps, fallback
+
+    def _parse_replan(self, data: dict[str, Any]) -> tuple[list[Step], str, bool]:
+        """解析重规划结果；兼容未返回新字段的旧模型响应。"""
+        steps, fallback = self._parse_steps(data)
+        preserve_remaining = data.get("preserve_remaining")
+        if not isinstance(preserve_remaining, bool):
+            # 旧响应通常用单步替换失败步骤、多步替换整个剩余流程。
+            preserve_remaining = len(steps) == 1 and not fallback
+        return steps, fallback, preserve_remaining

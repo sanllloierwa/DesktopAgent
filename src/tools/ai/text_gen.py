@@ -33,13 +33,23 @@ class GenerateArticleTool(BaseTool):
                     "type": "string",
                     "description": "可选的大纲（分号分隔各段要点）",
                 },
+                "output_format": {
+                    "type": "string",
+                    "description": "输出格式: plain_text 适合 Word/WPS 文档；markdown 适合支持 Markdown 的目标。",
+                    "enum": ["plain_text", "markdown"],
+                },
             },
             "required": ["topic"],
         },
     )
 
     async def execute(
-        self, topic: str, style: str = "professional", length: str = "medium", outline: str = ""
+        self,
+        topic: str,
+        style: str = "professional",
+        length: str = "medium",
+        outline: str = "",
+        output_format: str = "plain_text",
     ) -> dict:
         try:
             llm = create_llm_client()
@@ -65,16 +75,31 @@ class GenerateArticleTool(BaseTool):
         if outline:
             outline_instruction = f"\n请按照以下大纲组织文章：\n{outline}"
 
+        if output_format == "markdown":
+            format_instruction = (
+                "- 使用 Markdown 格式，包含标题、段落、列表等结构\n"
+                "- 如果合适，可以包含代码示例或表格"
+            )
+            final_instruction = "请直接输出文章正文（Markdown 格式）："
+        else:
+            output_format = "plain_text"
+            format_instruction = (
+                "- 使用适合粘贴到 Word/WPS 的纯文本格式\n"
+                "- 标题单独成行，段落之间空一行\n"
+                "- 列表使用中文编号或普通项目符号，不要使用 Markdown 标记\n"
+                "- 不要输出 #、**、```、| 表格、HTML 标签等标记"
+            )
+            final_instruction = "请直接输出文章正文（Word 友好的纯文本格式）："
+
         prompt = f"""请撰写一篇关于「{topic}」的文章。
 
 要求：
 - 风格：{style_desc}
 - 篇幅：{target_length}
-- 使用 Markdown 格式，包含标题、段落、列表等结构
-- 如果合适，可以包含代码示例或表格
+{format_instruction}
 {outline_instruction}
 
-请直接输出文章正文（Markdown 格式）："""
+{final_instruction}"""
 
         try:
             resp = await llm.messages.create(
@@ -89,6 +114,7 @@ class GenerateArticleTool(BaseTool):
                 "success": True,
                 "summary": f"Generated article about '{topic}' ({len(article)} chars)",
                 "article": article,
+                "format": output_format,
                 "topic": topic,
             }
         except Exception as exc:

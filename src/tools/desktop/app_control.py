@@ -19,6 +19,22 @@ _CHROMIUM_BROWSERS = {
     "googlechrome", "microsoftedge",
 }
 
+_APP_ALIASES: dict[str, tuple[str, ...]] = {
+    "edge": ("msedge",),
+    "microsoft edge": ("msedge",),
+    "ms edge": ("msedge",),
+    "vscode": ("code",),
+    "visual studio code": ("code",),
+    "vs code": ("code",),
+    "word": ("winword",),
+    "microsoft word": ("winword",),
+    "ms word": ("winword",),
+    "word document": ("winword",),
+    "wps office": ("wps", "winword"),
+    "kingsoft wps": ("wps",),
+    "wps writer": ("wps", "winword"),
+}
+
 
 def _is_chromium_browser(app_name: str) -> bool:
     """检测应用名称是否对应一个 Chromium 内核浏览器"""
@@ -204,15 +220,11 @@ class LaunchAppTool(BaseTool):
                 return v
 
         # 2. 常见别名
-        aliases: dict[str, str] = {
-            "edge": "msedge", "microsoft edge": "msedge", "ms edge": "msedge",
-            "vscode": "code", "visual studio code": "code", "vs code": "code",
-            "wps office": "wps", "kingsoft wps": "wps",
-        }
-        resolved = aliases.get(app_lower, app_lower)
-        for k, v in self.discovered_apps.items():
-            if k.lower() == resolved:
-                return v
+        aliases = _APP_ALIASES.get(app_lower, ())
+        for resolved in aliases:
+            for k, v in self.discovered_apps.items():
+                if k.lower() == resolved:
+                    return v
 
         # 3. app_name 包含在 discovered key 中
         for k, v in self.discovered_apps.items():
@@ -228,6 +240,11 @@ class LaunchAppTool(BaseTool):
 
     async def execute(self, app_name: str, wait_time: float = 3.0) -> dict:
         path = self._lookup_app(app_name) or find_executable(app_name)
+        if not path:
+            for alias in _APP_ALIASES.get(app_name.strip().lower(), ()):
+                path = self._lookup_app(alias) or find_executable(alias)
+                if path:
+                    break
         if not path:
             return {
                 "success": False,
@@ -279,12 +296,14 @@ class CloseAppTool(BaseTool):
         )
 
     async def execute(self, app_name: str) -> dict:
-        import pygetwindow as gw
         try:
+            import pygetwindow as gw
             for win in gw.getWindowsWithTitle(""):
                 if app_name.lower() in win.title.lower():
                     win.close()
                     return {"success": True, "summary": f"Closed window: {win.title}"}
+        except ImportError as exc:
+            return {"success": False, "error": f"[ENV_ERR] Missing dependency: {exc}", "summary": ""}
         except Exception as exc:
             return {"success": False, "error": str(exc), "summary": ""}
         return {"success": False, "error": f"No window found for {app_name}", "summary": ""}

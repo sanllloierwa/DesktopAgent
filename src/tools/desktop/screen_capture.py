@@ -24,5 +24,11 @@ class DesktopScreenshotTool(BaseTool):
                 "success": True,
                 "summary": f"Desktop screenshot captured ({result.get('size', '?')})",
                 "screenshot_base64": result["base64"],
+                "width": result["width"],
+                "height": result["height"],
+                "left": result["left"],
+                "top": result["top"],
+                "right": result["right"],
+                "bottom": result["bottom"],
             }
         return {"success": False, "error": result.get("error", "Unknown screenshot error")}

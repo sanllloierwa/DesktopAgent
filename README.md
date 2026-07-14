@@ -2,6 +2,11 @@
 
 AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Agent 自主规划并执行。
 
+> [!WARNING]
+> 最近新增的 Agnes MCP 视觉链路、视觉坐标定位、原生键鼠模拟、微信桌面流程和任务终态审计，
+> 目前仅完成代码级检查与单元测试，**尚未进行真实桌面场景的完整端到端测试**。
+> 请勿直接用于支付、删除、发布、批量发送等高风险操作。
+
 ## 架构概览
 
 **Plan → Execute → Observe → Verify** 闭环：
@@ -11,28 +16,54 @@ AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Ag
 | **Planner** | `src/agent/planner.py` | 将用户目标分解为有序的 `Step` 序列（工具调用 + 参数），失败时自动重规划 |
 | **Executor** | `src/agent/executor.py` | 从 `ToolRegistry` 查找工具并执行，返回 `ActionResult` |
 | **Observer** | `src/agent/observer.py` | 聚合感知数据（DOM 快照、UIA 树、截图）为统一的 `Context` 对象 |
-| **Verifier** | `src/agent/verifier.py` | 通过规则 + 可选 LLM 视觉校验步骤是否成功，支持覆盖误判 |
+| **Verifier** | `src/agent/verifier.py` | 通过规则 + LLM 校验单步结果与最终目标，避免只完成中间步骤却误报成功 |
 | **Memory** | `src/agent/memory.py` | 三层记忆：短期（滑动窗口）、工作记忆（当前会话）、长期（ChromaDB 向量库） |
 
 ## 已完成功能
 
-### 工具层（18 个已注册工具）
+### 工具层（29 个已注册工具）
 
-- **桌面控制**：启动/关闭应用（WPS、微信、记事本、Word），通过 `subprocess` + `pygetwindow` 实现
+- **桌面控制**：启动/关闭应用、窗口聚焦、Unicode 剪贴板输入、快捷键、坐标点击、鼠标移动、滚轮和拖拽
 - **WPS/Word COM 自动化**（`src/tools/desktop/wps_com.py`）：基于 `pywin32` COM 接口——创建文档、写入文本、设置字体/对齐、保存、导出 PDF、插入图片
 - **浏览器操作**（`src/tools/browser/navigate.py`）：基于 Playwright——导航、点击（CSS/文本/角色策略）、输入、截图、DOM 摘要、文本提取
-- **AI 工具**（`src/tools/ai/`）：文章生成（LLM）、文本摘要、屏幕分析（Anthropic 视觉 / DeepSeek 文本回退）
+- **AI 工具**（`src/tools/ai/`）：文章生成、文本摘要、Agnes 屏幕分析和结构化 UI 目标定位
+
+## 实验性功能（尚未进行真实场景测试）
+
+以下功能已经接入代码并覆盖部分单元测试，但**尚未进行真实桌面端到端测试**，稳定性、坐标准确性和第三方应用兼容性仍需验证。
+
+| 功能 | 当前实现 | 测试状态 |
+| --- | --- | --- |
+| **Agnes MCP 视觉分析** | `desktop_screenshot → analyze_screen → src/vision_mcp`，支持 MCP/direct 两种传输 | 尚未进行长时间稳定性和复杂界面测试；已观察到上游请求偶发超时 |
+| **结构化视觉定位** | `locate_screen_element` 返回目标边界框、物理屏幕坐标和置信度 | 尚未在不同 DPI、窗口缩放、遮挡和动态界面中进行真实点击测试 |
+| **模拟键鼠操作** | `focus_window`、`desktop_keypress`、`desktop_click`、`desktop_move_mouse`、`desktop_scroll`、`desktop_drag` | 尚未进行跨应用端到端测试；当前主要面向 Windows |
+| **多显示器/DPI 坐标** | 截图携带 `left/top/width/height`，启用 Per-Monitor DPI Awareness，并支持负坐标 | 尚未在多显示器排列和不同缩放比例组合下测试 |
+| **微信桌面自动化** | 规划使用窗口聚焦、快捷键搜索、文本输入、Enter 提交和截图复验 | 尚未进行真实账号、登录流程、群聊搜索和消息发送测试 |
+| **最终目标审计** | 计划耗尽后由 LLM 检查用户最终目标，未完成时触发补充规划 | 尚未进行大规模任务回归，可能产生额外模型调用或保守失败 |
+
+推荐的实验性视觉操作闭环：
+
+```text
+desktop_screenshot
+  → locate_screen_element
+  → desktop_click / desktop_move_mouse / desktop_scroll / desktop_drag
+  → desktop_screenshot
+  → analyze_screen
+```
+
+定位置信度低于默认阈值 `0.70` 或坐标越界时会拒绝点击，但这不能替代人工确认。
 
 ### 平台预设
 
 - **WPS**：完整文档创建流水线（新建 → 撰写 → 排版 → 导出 PDF）
 - **知乎**：登录、写文、配图、发布、搜索、互动
-- **微信**：搜索公众号、关注、发送消息
+- **微信**：搜索公众号、关注、发送消息（预设与近期桌面流程均尚未进行真实场景测试）
 
 ### 感知层
 
-- `screenshot.py`：`mss` + Pillow 屏幕截图，输出 base64 PNG
+- `screenshot.py`：`mss` + Pillow 屏幕截图，输出 base64 PNG 及物理屏幕坐标元数据
 - `uia_parser.py`：Windows UI Automation 树遍历，提取前台窗口的可交互控件
+- `vision.py`：通过 Agnes 分析截图，并可将 UI 目标转换为带置信度的结构化屏幕坐标（尚未进行真实点击测试）
 
 ### 用户界面（三种模式）
 
@@ -68,11 +99,11 @@ AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Ag
 - 将语音指令直接送入 Planner 生成任务计划
 - 执行过程中的关键节点支持语音播报反馈（TTS）
 
-#### 图像理解与桌面内容提取
+#### 图像理解与桌面内容提取（部分已实现，尚未完成真实场景测试）
 
-- 截取指定窗口或桌面区域，通过视觉 LLM 分析内容
+- 已支持主显示器截图和视觉 LLM 分析；指定窗口/区域的完整工具接口仍待补充
 - 支持"打开这个文件夹里的图片，把标题改成图片里的文字"一类跨应用信息提取
-- 对 UIA 无法覆盖的控件（如图形按钮、自定义渲染区域），通过截图 + 视觉定位实现点击
+- 已加入截图 + 视觉定位 + 坐标点击原型，但尚未在 UIA 无法覆盖的真实控件上系统测试
 
 #### 指定窗口的信息获取
 
@@ -119,8 +150,8 @@ AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Ag
 
 | 项目 | 说明 |
 | --- | --- |
-| **测试覆盖** | `tests/` 目录已建，需补充单元测试、集成测试、端到端测试 |
-| **人机交互模拟** | `humanize.py` 已搭建框架（随机延迟、鼠标轨迹），需接入执行器 |
+| **测试覆盖** | 已有视觉桥接、坐标转换、键鼠工具、重规划和终态审计单元测试；真实应用集成测试与端到端测试仍缺失 |
+| **人机交互模拟** | 已支持基础键鼠操作；自然鼠标轨迹、随机延迟和真实应用兼容性仍待完善与测试 |
 | **会话持久化** | 知乎/微信登录态保存与恢复，凭证安全管理 |
 | **跨平台适配** | Linux（X11/Wayland + AT-SPI）与 macOS（Accessibility API）感知层 |
 | **CI/CD** | 自动化构建、测试、打包流水线 |
@@ -138,23 +169,27 @@ cp .env.example .env
 # 编辑 .env 填入你的 API Key
 
 # 启动（任选一种）
-python main.py --ui          # Gradio Web 界面
-python main.py --local-ui    # 原生桌面界面
-python main.py --interactive # 命令行 REPL
+python -m src.main --ui          # Gradio Web 界面
+python -m src.main --local-ui    # 原生桌面界面
+python -m src.main --interactive # 命令行 REPL
+
+# 视觉 MCP 健康检查（不会分析屏幕）
+python scripts/debug_agnes_mcp.py health
 ```
 
 ## 项目结构
 
 ```text
 DesktopAgent/
-├── main.py                   # 入口
 ├── config/default.yaml       # 默认配置
 ├── src/
+│   ├── main.py               # 程序入口
 │   ├── agent/                # 核心 Agent 循环（planner, executor, observer, verifier, memory）
 │   ├── tools/                # 工具层（desktop/, browser/, ai/）
+│   ├── vision_mcp/           # Agnes 视觉 MCP 客户端、服务端与后端
 │   ├── ui/                   # 用户界面（gradio, ctk, events, bridge）
 │   └── utils/                # LLM 工厂、配置管理、日志、感知
-├── tests/                    # 测试（待补充）
+├── tests/                    # 单元测试（真实应用端到端测试待补充）
 ├── scripts/                  # 辅助脚本
 └── docs/                     # 设计文档
 ```
@@ -172,4 +207,4 @@ DesktopAgent/
 
 ## 当前状态
 
-  只是一个小的运行测试，很多内容尚未进行测试，仍在持续进行中……与DeepSeek-v4 + Claude Code 协同生产，本文档完全由AI生成，暂时不对其中内容的真实性做保证……此外，本项目是一个实习项目。
+本项目仍处于实验和实习开发阶段。基础单元测试不代表真实桌面环境可用；尤其是视觉定位、模拟键鼠、微信操作、多显示器坐标和最终目标审计等近期功能，均**尚未进行完整真实场景测试**。请在隔离环境中谨慎验证，不对自动化结果作可靠性保证。

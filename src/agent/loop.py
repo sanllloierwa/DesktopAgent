@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from src.schemas.task import Task, TaskStatus
+from src.schemas.task import ActionResult, Step, Task, TaskStatus
 from src.agent.state import AgentState
 from src.agent.memory import MemoryHub
 from src.agent.observer import Observer
@@ -59,16 +59,79 @@ class AgentLoop:
 
     def _lookup_previous_value(self, key: str) -> Any:
         key = key.strip()
-        for prefix in ("last_result.", "last.", "data."):
+        for prefix in ("last_result.", "last."):
             if key.startswith(prefix):
-                key = key[len(prefix):]
+                return self._lookup_in_result(self.memory.working.last_result, key[len(prefix):])
 
-        for _step, result in reversed(self.memory.working.completed_steps):
-            if isinstance(result.data, dict) and key in result.data:
-                return result.data[key]
-            if key == "summary":
-                return result.summary
+        if key.startswith("data."):
+            key = key[len("data."):]
+
+        if "." in key:
+            tool_name, field = key.split(".", 1)
+            for step, result in reversed(self.memory.working.completed_steps):
+                if step.tool_name == tool_name:
+                    value = self._lookup_in_result(result, field)
+                    if value is not None:
+                        return value
+
+        if key.endswith("_result"):
+            tool_name = key[:-len("_result")]
+            for step, result in reversed(self.memory.working.completed_steps):
+                if step.tool_name == tool_name:
+                    return self._primary_result_value(result)
+
+        for step, result in reversed(self.memory.working.completed_steps):
+            value = self._lookup_in_result(result, key)
+            if value is not None:
+                return value
+            if key == step.tool_name:
+                return self._primary_result_value(result)
+
+        if key == "user_input":
+            for step, result in reversed(self.memory.working.completed_steps):
+                if step.tool_name in {"generate_article", "summarize", "extract_text", "analyze_screen"}:
+                    value = self._primary_result_value(result)
+                    if value is not None:
+                        logger.warning(
+                            "Resolved {{user_input}} from previous content result because no "
+                            "request_user_input result exists."
+                        )
+                        return value
         return None
+
+    def _lookup_in_result(self, result: ActionResult | None, key: str) -> Any:
+        if result is None:
+            return None
+        if key in {"screenshot", "screenshot_base64", "image_base64"}:
+            return result.screenshot_base64
+        if isinstance(result.data, dict) and key in result.data:
+            return result.data[key]
+        if key == "summary":
+            return result.summary
+        if key in {"result", "output", "value", "text", "content"}:
+            return self._primary_result_value(result)
+        return None
+
+    def _primary_result_value(self, result: ActionResult) -> Any:
+        if isinstance(result.data, dict):
+            for key in (
+                "article",
+                "result",
+                "user_input",
+                "text",
+                "content",
+                "answer",
+                "screenshot_base64",
+                "summary",
+                "filepath",
+                "url",
+            ):
+                value = result.data.get(key)
+                if value not in (None, ""):
+                    return value
+        if result.screenshot_base64:
+            return result.screenshot_base64
+        return result.summary or None
 
     def _resolve_param_refs(self, value: Any) -> Any:
         if isinstance(value, dict):
@@ -90,11 +153,52 @@ class AgentLoop:
 
         return pattern.sub(replace_match, value)
 
+    def _unresolved_param_refs(self, value: Any) -> list[str]:
+        refs: list[str] = []
+        if isinstance(value, dict):
+            for item in value.values():
+                refs.extend(self._unresolved_param_refs(item))
+            return refs
+        if isinstance(value, list):
+            for item in value:
+                refs.extend(self._unresolved_param_refs(item))
+            return refs
+        if not isinstance(value, str):
+            return refs
+
+        pattern = re.compile(r"\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}")
+        return [match.group(1) for match in pattern.finditer(value)]
+
     def _runtime_step(self, step: Any) -> Any:
         resolved_params = self._resolve_param_refs(step.params)
         if resolved_params == step.params:
             return step
         return replace(step, params=resolved_params)
+
+    @staticmethod
+    def _merge_replan(
+        current_steps: list[Any],
+        step_index: int,
+        new_steps: list[Any],
+        preserve_remaining: bool,
+    ) -> list[Any]:
+        """替换失败步骤，并按 Planner 声明决定是否保留旧后续步骤。"""
+        remaining = current_steps[step_index + 1:] if preserve_remaining else []
+        return current_steps[:step_index] + new_steps + remaining
+
+    async def _execute_runtime_step(self, step: Any) -> ActionResult:
+        unresolved_refs = self._unresolved_param_refs(step.params)
+        if unresolved_refs:
+            refs = ", ".join(sorted(set(unresolved_refs)))
+            msg = f"Unresolved parameter reference(s): {refs}"
+            logger.warning(f"Step [{step.id}] blocked before execution: {msg}")
+            return ActionResult(
+                step_id=step.id,
+                success=False,
+                error=msg,
+                summary=msg,
+            )
+        return await self.executor.run(step)
 
     async def run(self, task: Task) -> LoopResult:
         logger.info(f"AgentLoop starting task: {task.goal}")
@@ -118,7 +222,62 @@ class AgentLoop:
         # 2. 执行循环
         step_index = 0
         replan_count = 0  # 跟踪连续 replan 次数，防止无限循环
-        while step_index < len(task.steps):
+        while True:
+            if step_index >= len(task.steps):
+                goal_ok, goal_reason = await self.verifier.check_task_completion(
+                    task, self.memory.working.completed_steps
+                )
+                if goal_ok:
+                    logger.info(f"Final goal verified: {goal_reason}")
+                    break
+
+                replan_count += 1
+                if replan_count > self.config.agent.replan_max:
+                    msg = f"Final goal not achieved: {goal_reason}"
+                    logger.error(msg)
+                    await self.events.emit(AgentEvent.error(msg))
+                    task.mark_failed()
+                    await self.events.emit(AgentEvent.task_done(
+                        False, msg, self.state.step_count, 0
+                    ))
+                    return LoopResult(
+                        success=False,
+                        task=task,
+                        summary=msg,
+                        total_steps=self.state.step_count,
+                    )
+
+                logger.warning(f"Plan exhausted before goal completion: {goal_reason}")
+                await self.events.emit(AgentEvent.log(
+                    f"Final goal incomplete, replanning: {goal_reason}"
+                ))
+                completion_gap = Step(
+                    tool_name="goal_completion",
+                    params={},
+                    description="补齐尚未完成的用户最终目标",
+                    expected_outcome=task.goal,
+                )
+                context = self.memory.context_for_planner()
+                new_steps, fallback, _ = await self.planner.replan(
+                    task, completion_gap, goal_reason, context, []
+                )
+                if not new_steps:
+                    msg = fallback or f"Final goal not achieved: {goal_reason}"
+                    task.mark_failed()
+                    await self.events.emit(AgentEvent.task_done(
+                        False, msg, self.state.step_count, 0
+                    ))
+                    return LoopResult(
+                        success=False,
+                        task=task,
+                        summary=msg,
+                        total_steps=self.state.step_count,
+                    )
+
+                task.steps.extend(new_steps)
+                await self.events.emit(AgentEvent.plan_done(task.steps))
+                continue
+
             step = task.steps[step_index]
 
             if self.state.step_count >= self.config.agent.max_steps:
@@ -173,11 +332,13 @@ class AgentLoop:
                 await self.events.emit(AgentEvent.log(f"Replan before step: {guard_result.reason}"))
                 context = self.memory.context_for_planner()
                 remaining = task.steps[step_index + 1:]
-                new_steps, fallback = await self.planner.replan(
+                new_steps, fallback, preserve_remaining = await self.planner.replan(
                     task, step, guard_result.reason, context, remaining
                 )
                 if new_steps:
-                    task.steps = task.steps[:step_index] + new_steps + remaining
+                    task.steps = self._merge_replan(
+                        task.steps, step_index, new_steps, preserve_remaining
+                    )
                     await self.events.emit(AgentEvent.plan_done(task.steps))
                     continue
                 summary = fallback or guard_result.reason
@@ -189,7 +350,7 @@ class AgentLoop:
             await self.events.emit(AgentEvent.step_start(step, step_index + 1, len(task.steps)))
 
             runtime_step = self._runtime_step(step)
-            result = await self.executor.run(runtime_step)
+            result = await self._execute_runtime_step(runtime_step)
             self.memory.commit(step, result)
 
             # 发射步骤完成事件（包含错误信息）
@@ -223,10 +384,15 @@ class AgentLoop:
                 retries = 0
                 user_cancelled = False
                 user_timeout = False
+                env_error = False
                 # 认证/授权错误重试无意义，直接跳过重试阶段
                 if reason.startswith("[AUTH_ERR]"):
                     reason = reason.replace("[AUTH_ERR] ", "")
                     retries = self.config.agent.retry_max
+                if reason.startswith("[ENV_ERR]"):
+                    reason = reason.replace("[ENV_ERR] ", "")
+                    retries = self.config.agent.retry_max
+                    env_error = True
                 # 用户取消 — 跳过重试且不进入 replan
                 if reason.startswith("[USER_CANCELLED]"):
                     reason = reason.replace("[USER_CANCELLED] ", "")
@@ -242,10 +408,15 @@ class AgentLoop:
                     await self.events.emit(
                         AgentEvent.step_retry(step, retries, self.config.agent.retry_max, reason)
                     )
-                    result = await self.executor.run(runtime_step)
+                    runtime_step = self._runtime_step(step)
+                    result = await self._execute_runtime_step(runtime_step)
                     self.memory.commit(step, result)
                     await self.events.emit(AgentEvent.step_done(step, result))
                     ok, reason = await self.verifier.check(step, result)
+                    if not ok and reason.startswith("[ENV_ERR]"):
+                        reason = reason.replace("[ENV_ERR] ", "")
+                        retries = self.config.agent.retry_max
+                        env_error = True
                     # 工具反复成功但 Verifier 反复拒绝 → 信任工具
                     if not ok and result.success:
                         verifier_mismatch_count += 1
@@ -259,6 +430,15 @@ class AgentLoop:
 
                 if not ok:
                     # 用户取消 — 立即失败，不进入 replan
+                    if env_error:
+                        msg = f"Environment dependency/capability unavailable: {reason}"
+                        logger.error(msg)
+                        await self.events.emit(AgentEvent.error(msg))
+                        task.mark_failed()
+                        await self.events.emit(AgentEvent.task_done(
+                            False, msg, self.state.step_count, 0))
+                        return LoopResult(success=False, task=task, summary=msg)
+
                     if user_cancelled:
                         msg = f"用户取消: {reason}"
                         logger.warning(msg)
@@ -280,13 +460,17 @@ class AgentLoop:
 
                     context = self.memory.context_for_planner()
                     remaining = task.steps[step_index + 1:]  # 失败步骤之后的原始步骤
-                    new_steps, fallback = await self.planner.replan(task, step, reason, context, remaining)
+                    new_steps, fallback, preserve_remaining = await self.planner.replan(
+                        task, step, reason, context, remaining
+                    )
                     if new_steps:
-                        # 保留原始剩余步骤，避免被 replan 截断整个计划
-                        task.steps = task.steps[:step_index] + new_steps + remaining
+                        task.steps = self._merge_replan(
+                            task.steps, step_index, new_steps, preserve_remaining
+                        )
+                        kept_count = len(remaining) if preserve_remaining else 0
                         logger.info(
-                            f"Replan merged: {len(new_steps)} new + {len(remaining)} remaining = "
-                            f"{len(new_steps) + len(remaining)} total steps ahead"
+                            f"Replan merged: {len(new_steps)} new + {kept_count} retained = "
+                            f"{len(new_steps) + kept_count} total steps ahead"
                         )
                         self.state.record_success()
                         continue

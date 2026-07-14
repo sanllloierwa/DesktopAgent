@@ -7,7 +7,7 @@ from pathlib import Path
 from functools import lru_cache
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
 
@@ -30,9 +30,13 @@ class LLMConfig(BaseModel):
 
 
 class VisionConfig(BaseModel):
-    provider: str = "deepseek"
-    model: str = "deepseek-chat"
+    provider: str = "agnes"
+    model: str = "agnes-2.0-flash"
     base_url: str = ""
+    transport: str = "mcp"
+    mcp_command: str = ""
+    mcp_args: list[str] = Field(default_factory=lambda: ["-m", "src.vision_mcp.agnes_server"])
+    timeout_seconds: float = 60.0
 
 
 class ImageGenConfig(BaseModel):

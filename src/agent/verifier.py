@@ -7,7 +7,7 @@ from typing import Any
 
 from loguru import logger
 
-from src.schemas.task import Step, ActionResult
+from src.schemas.task import Step, ActionResult, Task
 from src.agent.observer import Observer, Context
 
 
@@ -39,6 +39,59 @@ class Verifier:
 
         return True, "Step completed successfully"
 
+    async def check_task_completion(
+        self,
+        task: Task,
+        completed_steps: list[tuple[Step, ActionResult]],
+    ) -> tuple[bool, str]:
+        """严格判断用户的最终目标是否已经由执行证据完成。"""
+        if self.llm is None:
+            return False, "No LLM available for final goal verification"
+
+        evidence: list[str] = []
+        for step, result in completed_steps[-20:]:
+            status = "成功" if result.success else "失败"
+            line = f"- [{status}] [{step.tool_name}] {step.description}: {result.summary}"
+            if result.success and isinstance(result.data, dict):
+                answer = result.data.get("answer")
+                if isinstance(answer, str) and answer.strip():
+                    line += f"；观察结果={answer[:500]}"
+            evidence.append(line)
+
+        prompt = f"""你是桌面 Agent 的最终目标审计器。请根据真实执行证据，严格判断用户目标是否已经完成。
+
+用户目标: {task.goal}
+
+执行证据:
+{chr(10).join(evidence) if evidence else '(无执行证据)'}
+
+判定规则:
+- 只能依据成功步骤和观察结果，不能依据原计划或步骤描述中的意图自行推断成功。
+- 截图、分析、打开应用、请求用户输入都只是中间步骤，不能证明发送、保存、发布等动作已完成。
+- 对“发送消息”任务，必须有实际输入消息并提交发送的证据；仅粘贴文字不等于已发送。
+- 如果证据不足，必须返回 success=false，并具体说明仍缺少什么动作。
+
+只回答 JSON:
+{{"success": true/false, "reason": "一句话原因"}}"""
+
+        try:
+            resp = await self.llm.messages.create(
+                model=self.llm.model,
+                max_tokens=200,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = resp.content[0].text.strip()
+            if "```" in text:
+                text = text.split("```", 2)[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            data = json.loads(text)
+            return bool(data.get("success")), str(data.get("reason", "Final goal not verified"))
+        except Exception as exc:
+            logger.warning(f"Final goal verification failed: {exc}")
+            return False, f"Final goal verification unavailable: {exc}"
+
     def _rule_check(self, step: Step, result: ActionResult) -> tuple[bool, str]:
         """基于规则的快速检查"""
         tool = step.tool_name
@@ -60,7 +113,11 @@ class Verifier:
         只有确实改变 UI 状态、且依赖截图才能判断的操作才需要 LLM 视觉验证。
         launch_app 工具自身已确认进程启动成功，无需额外视觉确认。
         """
-        visual_tools = {"click", "navigate", "type_text"}
+        visual_tools = {
+            "click", "navigate", "type_text", "focus_window",
+            "desktop_keypress", "desktop_click", "desktop_move_mouse",
+            "desktop_scroll", "desktop_drag",
+        }
         return step.tool_name in visual_tools and self.llm is not None
 
     async def _llm_verify(

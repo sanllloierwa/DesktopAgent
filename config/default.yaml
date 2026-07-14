@@ -16,6 +16,10 @@ vision:
   provider: agnes               # agnes | anthropic | openai | deepseek | local
   model: agnes-2.0-flash        # agnes-2.0-flash (推荐，256K上下文，支持视觉)
   base_url: "https://apihub.agnes-ai.com/v1"
+  transport: mcp                # mcp | direct
+  mcp_command: ""               # 留空时使用当前 Python 解释器
+  mcp_args: ["-m", "src.vision_mcp.agnes_server"]
+  timeout_seconds: 60
 
 image_gen:
   provider: openai

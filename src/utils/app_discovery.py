@@ -13,7 +13,7 @@ from loguru import logger
 _COMMON_APPS = [
     "chrome", "firefox", "msedge", "opera", "brave",
     "code",    # VS Code
-    "notepad",
+    "notepad", "winword", "wps",
     "spotify", "vlc",
     "obsidian", "notion",
     "slack", "discord", "telegram",
