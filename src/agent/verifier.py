@@ -56,6 +56,14 @@ class Verifier:
                 answer = result.data.get("answer")
                 if isinstance(answer, str) and answer.strip():
                     line += f"；观察结果={answer[:500]}"
+                confirmation = result.data.get("confirmation")
+                if confirmation in {"yes", "no"}:
+                    line += f"；人工确认={confirmation}"
+                if result.data.get("foreground_verified") is True:
+                    line += (
+                        f"；前台目标已验证={result.data.get('target_app', '?')}"
+                        f"({result.data.get('window_title', '?')})"
+                    )
             evidence.append(line)
 
         prompt = f"""你是桌面 Agent 的最终目标审计器。请根据真实执行证据，严格判断用户目标是否已经完成。
@@ -69,6 +77,8 @@ class Verifier:
 - 只能依据成功步骤和观察结果，不能依据原计划或步骤描述中的意图自行推断成功。
 - 截图、分析、打开应用、请求用户输入都只是中间步骤，不能证明发送、保存、发布等动作已完成。
 - 对“发送消息”任务，必须有实际输入消息并提交发送的证据；仅粘贴文字不等于已发送。
+- 全局键鼠工具只有在证据包含“前台目标已验证”时，才能证明操作发送给了目标应用。
+- 人工确认=yes 可以证明对应确认步骤成立；人工确认=unknown 或仅有输入长度不能作为肯定证据。
 - 如果证据不足，必须返回 success=false，并具体说明仍缺少什么动作。
 
 只回答 JSON:

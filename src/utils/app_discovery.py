@@ -16,7 +16,7 @@ _COMMON_APPS = [
     "notepad", "winword", "wps",
     "spotify", "vlc",
     "obsidian", "notion",
-    "slack", "discord", "telegram",
+    "slack", "discord", "telegram", "wechat", "weixin",
     "postman", "dbeaver",
 ]
 

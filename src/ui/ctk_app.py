@@ -31,7 +31,7 @@ from typing import Any
 from src.schemas.task import Task
 from src.tools.base import ToolRegistry
 from src.agent.loop import AgentLoop
-from src.ui.events import AgentEvent, EventType
+from src.ui.events import AgentEvent, EventType, task_done_console_label
 from src.tools.interactive.user_input import UserInputBridge, PromptRequest
 from src.utils.llm_factory import create_llm_client
 from src.utils.user_settings import (
@@ -612,7 +612,8 @@ class CtkDesktopAgent:
         # 控制台
         prefix = {
             "plan_start": "[P]", "plan_done": "[P]", "step_start": "[>]", "step_done": "  [OK]" if data.get("success", True) else "  [FAIL]",
-            "step_retry": "  [RETRY]", "error": "[ERR]", "task_done": "[DONE]",
+            "step_retry": "  [RETRY]", "error": "[ERR]",
+            "task_done": f"[{task_done_console_label(data)}]",
         }.get(etype, "[-]")
         self._append_console(f"{prefix} {msg}\n")
 

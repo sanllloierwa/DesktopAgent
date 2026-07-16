@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
+from src.tools.desktop import text_input
 from src.tools.desktop.text_input import _set_clipboard
 
 
@@ -50,3 +51,34 @@ def test_set_clipboard_always_closes_on_failure(monkeypatch) -> None:
         raise AssertionError("expected clipboard failure")
 
     assert calls == ["open", "empty", "close"]
+
+
+async def test_text_input_verifies_target_before_paste(monkeypatch) -> None:
+    actions: list[str] = []
+    activations = iter([(123, "微信"), (123, "微信")])
+    monkeypatch.setattr(text_input, "activate_window", lambda _app: next(activations))
+    monkeypatch.setattr(text_input, "_set_clipboard", lambda _text: actions.append("clipboard"))
+    monkeypatch.setattr(text_input, "_paste_via_ctrl_v", lambda: actions.append("paste"))
+    monkeypatch.setattr(text_input.time, "sleep", lambda _seconds: None)
+
+    result = await text_input.DesktopTypeTextTool().execute("demo", app_name="wechat")
+
+    assert result["success"] is True
+    assert result["foreground_verified"] is True
+    assert actions == ["clipboard", "paste"]
+
+
+async def test_text_input_does_not_touch_clipboard_when_activation_fails(monkeypatch) -> None:
+    actions: list[str] = []
+
+    def fail_activation(_app):
+        raise RuntimeError("target not foreground")
+
+    monkeypatch.setattr(text_input, "activate_window", fail_activation)
+    monkeypatch.setattr(text_input, "_set_clipboard", lambda _text: actions.append("clipboard"))
+    monkeypatch.setattr(text_input, "_paste_via_ctrl_v", lambda: actions.append("paste"))
+
+    result = await text_input.DesktopTypeTextTool().execute("demo", app_name="wechat")
+
+    assert result["success"] is False
+    assert actions == []

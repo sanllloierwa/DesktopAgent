@@ -60,7 +60,7 @@ def test_planner_prompt_routes_native_wechat_through_desktop_tools() -> None:
     prompt = Planner.SYSTEM_PROMPT
 
     assert "focus_window" in prompt
-    assert "desktop_keypress(ctrl+f)" in prompt
+    assert 'desktop_keypress(keys="ctrl+f", app_name="wechat")' in prompt
     assert "不要索要微信账号、手机号或密码" in prompt
     assert "最后截图并分析消息是否出现在聊天记录中" in prompt
 
@@ -73,3 +73,13 @@ def test_planner_prompt_requires_structured_visual_coordinates() -> None:
     assert '"{{locate_screen_element.x}}"' in prompt
     assert '"{{locate_screen_element.confidence}}"' in prompt
     assert "禁止根据自然语言描述或历史截图臆造坐标" in prompt
+    assert '微信统一使用 app_name="wechat"' in prompt
+
+
+def test_replan_prompt_stops_using_vision_after_circuit_breaker() -> None:
+    source = Planner.replan.__code__.co_consts
+    prompt_text = "\n".join(value for value in source if isinstance(value, str))
+
+    assert "[VISION_UNAVAILABLE]" in prompt_text
+    assert "禁止继续规划 analyze_screen 或 locate_screen_element" in prompt_text
+    assert "不要再次规划 request_user_input" in prompt_text

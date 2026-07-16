@@ -22,6 +22,21 @@ class UserInputCancelledError(Exception):
     """用户取消了输入操作"""
 
 
+def normalize_confirmation(text: str) -> str:
+    """Normalize short manual confirmations without exposing arbitrary input."""
+    compact = text.strip().lower().replace(" ", "")
+    yes_values = {
+        "是", "是的", "已登录", "已完成", "已发送", "确认", "确定",
+        "yes", "y", "ok", "true", "完成", "成功",
+    }
+    no_values = {"否", "不是", "没有", "未登录", "未完成", "未发送", "no", "n", "false"}
+    if compact in yes_values or compact.startswith(("是，", "是,", "yes,")):
+        return "yes"
+    if compact in no_values or compact.startswith(("否，", "否,", "no,")):
+        return "no"
+    return "unknown"
+
+
 @dataclass
 class PromptRequest:
     """一个待处理的用户输入请求"""
@@ -142,11 +157,17 @@ class RequestUserInputTool(BaseTool):
         bridge = UserInputBridge.get_instance()
         try:
             result = await bridge.request(prompt)
+            confirmation = normalize_confirmation(result)
             logger.info(f"User provided input: {len(result)} chars")
             return {
                 "success": True,
-                "summary": f"用户输入了 {len(result)} 个字符",
+                "summary": (
+                    f"用户确认: {confirmation}"
+                    if confirmation != "unknown"
+                    else f"用户输入了 {len(result)} 个字符"
+                ),
                 "user_input": result,
+                "confirmation": confirmation,
             }
         except UserInputCancelledError:
             return {

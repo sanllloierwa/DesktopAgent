@@ -130,6 +130,22 @@ def _find_window(app_name: str) -> tuple[int, str] | None:
     return min(matches, key=lambda item: len(item[1]))
 
 
+def _root_window(hwnd: int) -> int:
+    import win32gui
+
+    root = int(win32gui.GetAncestor(hwnd, 2))  # GA_ROOT
+    return root or int(hwnd)
+
+
+def _foreground_matches(hwnd: int) -> bool:
+    import win32gui
+
+    foreground = int(win32gui.GetForegroundWindow())
+    if not foreground:
+        return False
+    return _root_window(foreground) == _root_window(hwnd)
+
+
 def _focus_window(hwnd: int) -> None:
     import win32con
     import win32gui
@@ -147,6 +163,26 @@ def _focus_window(hwnd: int) -> None:
         win32gui.SetForegroundWindow(hwnd)
 
 
+def activate_window(app_name: str, timeout: float = 2.0) -> tuple[int, str]:
+    """Focus a named app and verify it really owns the foreground before input."""
+    match = _find_window(app_name)
+    if match is None:
+        raise RuntimeError(f"No visible window matched '{app_name}'")
+    hwnd, title = match
+    deadline = time.monotonic() + max(0.2, min(float(timeout), 5.0))
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        try:
+            _focus_window(hwnd)
+        except Exception as exc:
+            last_error = exc
+        time.sleep(0.08)
+        if _foreground_matches(hwnd):
+            return hwnd, title
+    detail = f": {last_error}" if last_error else ""
+    raise RuntimeError(
+        f"Target window '{title}' did not become foreground; input was not sent{detail}"
+    )
 def _key_code(name: str) -> int:
     lowered = name.strip().lower()
     if lowered in _VK_CODES:
@@ -195,14 +231,7 @@ class FocusWindowTool(BaseTool):
 
     async def execute(self, app_name: str, wait_after: float = 0.5) -> dict:
         try:
-            match = _find_window(app_name)
-            if match is None:
-                return {
-                    "success": False,
-                    "error": f"No visible window matched '{app_name}'",
-                }
-            hwnd, title = match
-            _focus_window(hwnd)
+            hwnd, title = activate_window(app_name)
             time.sleep(max(0.0, min(wait_after, 5.0)))
             return {
                 "success": True,
@@ -221,6 +250,7 @@ class DesktopKeypressTool(BaseTool):
         name="desktop_keypress",
         description=(
             "向当前聚焦的原生桌面应用发送按键或快捷键。"
+            "每次发送前会按 app_name 重新聚焦并验证目标窗口。"
             "支持 enter、tab、escape、方向键、ctrl+f、ctrl+a、shift+tab 等。"
         ),
         parameters={
@@ -229,6 +259,10 @@ class DesktopKeypressTool(BaseTool):
                 "keys": {
                     "type": "string",
                     "description": "按键或组合键，如 enter、ctrl+f、ctrl+a、shift+tab",
+                },
+                "app_name": {
+                    "type": "string",
+                    "description": "必须接收按键的目标应用，如 wechat / 微信 / word",
                 },
                 "presses": {
                     "type": "integer",
@@ -239,14 +273,15 @@ class DesktopKeypressTool(BaseTool):
                     "description": "按键后等待秒数，默认 0.3",
                 },
             },
-            "required": ["keys"],
+            "required": ["keys", "app_name"],
         },
     )
 
     async def execute(
-        self, keys: str, presses: int = 1, wait_after: float = 0.3
+        self, keys: str, app_name: str, presses: int = 1, wait_after: float = 0.3
     ) -> dict:
         try:
+            hwnd, title = activate_window(app_name)
             count = max(1, min(int(presses), 10))
             for _ in range(count):
                 _send_key_chord(keys)
@@ -254,9 +289,13 @@ class DesktopKeypressTool(BaseTool):
             time.sleep(max(0.0, min(wait_after, 5.0)))
             return {
                 "success": True,
-                "summary": f"Pressed {keys} x{count}",
+                "summary": f"Pressed {keys} x{count} in verified window: {title}",
                 "keys": keys,
                 "presses": count,
+                "target_app": app_name,
+                "window_title": title,
+                "window_handle": hwnd,
+                "foreground_verified": True,
             }
         except Exception as exc:
             return {"success": False, "error": str(exc)}

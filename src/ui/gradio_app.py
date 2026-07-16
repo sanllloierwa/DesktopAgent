@@ -31,7 +31,7 @@ from typing import Any, Generator
 from src.schemas.task import Task
 from src.tools.base import ToolRegistry
 from src.agent.loop import AgentLoop
-from src.ui.events import AgentEvent, EventBus, EventType
+from src.ui.events import AgentEvent, EventBus, EventType, task_done_console_label
 from src.utils.llm_factory import create_llm_client, DEEPSEEK_BASE_URL
 from src.utils.config import load_config
 from src.utils.user_settings import (
@@ -499,7 +499,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                         "step_done": "  OK" if e.get("data", {}).get("success", True) else "  FAIL",
                         "step_retry": "  retry",
                         "error": "ERR",
-                        "task_done": "DONE",
+                        "task_done": task_done_console_label(e.get("data", {})),
                         "log": "  ",
                     }.get(e["type"], "-")
                     console_lines.append(f"[{prefix}] {e['message']}")

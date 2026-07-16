@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from src.tools.base import BaseTool, ToolSchema
+from src.tools.desktop.native_control import activate_window
 
 
 def _set_clipboard(text: str) -> None:
@@ -45,7 +46,7 @@ class DesktopTypeTextTool(BaseTool):
         description=(
             "向当前聚焦的桌面应用程序输入文本。"
             "使用剪贴板粘贴方式，支持任意文本。"
-            "输入前请确保目标应用窗口已打开并获得焦点。"
+            "输入前会按 app_name 重新聚焦并验证目标窗口。"
         ),
         parameters={
             "type": "object",
@@ -54,16 +55,31 @@ class DesktopTypeTextTool(BaseTool):
                     "type": "string",
                     "description": "要输入的文本内容",
                 },
+                "app_name": {
+                    "type": "string",
+                    "description": "必须接收文本的目标应用，如 wechat / 微信 / word",
+                },
             },
-            "required": ["text"],
+            "required": ["text", "app_name"],
         },
     )
 
-    async def execute(self, text: str) -> dict:
+    async def execute(self, text: str, app_name: str) -> dict:
         try:
+            hwnd, title = activate_window(app_name)
             _set_clipboard(text)
             time.sleep(0.1)
+            # Clipboard operations or another UI may steal focus; verify again
+            # immediately before the global Ctrl+V injection.
+            hwnd, title = activate_window(app_name)
             _paste_via_ctrl_v()
-            return {"success": True, "summary": f"Typed {len(text)} chars via clipboard paste"}
+            return {
+                "success": True,
+                "summary": f"Typed {len(text)} chars in verified window: {title}",
+                "target_app": app_name,
+                "window_title": title,
+                "window_handle": hwnd,
+                "foreground_verified": True,
+            }
         except Exception as exc:
             return {"success": False, "error": str(exc)}

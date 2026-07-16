@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from src.schemas.task import ActionResult, Step, Task, TaskStatus
+from src.schemas.task import ActionResult, RetryPolicy, Step, Task, TaskStatus
 from src.agent.state import AgentState
 from src.agent.memory import MemoryHub
 from src.agent.observer import Observer
@@ -175,6 +175,76 @@ class AgentLoop:
             return step
         return replace(step, params=resolved_params)
 
+    def _retry_limit(self, step: Step) -> int:
+        """Return retry attempts after the initial call for this step policy."""
+        if step.retry_policy == RetryPolicy.ONCE:
+            return 0
+        return max(0, int(self.config.agent.retry_max))
+
+    @staticmethod
+    def _is_vision_step(step: Step) -> bool:
+        return step.tool_name in {"analyze_screen", "locate_screen_element"}
+
+    @staticmethod
+    def _is_vision_timeout(reason: str) -> bool:
+        lowered = reason.lower()
+        return reason.startswith("[VISION_TIMEOUT]") or (
+            "timed out" in lowered and "vision" in lowered
+        ) or "request timed out" in lowered
+
+    def _record_vision_failure(self, step: Step, reason: str) -> None:
+        if self._is_vision_step(step) and self._is_vision_timeout(reason):
+            self.state.record_vision_timeout()
+            if self.state.vision_circuit_open:
+                logger.warning("Vision circuit opened after repeated timeouts")
+
+    @staticmethod
+    def _interactive_step_key(step: Step) -> str | None:
+        if step.tool_name != "request_user_input":
+            return None
+        text = " ".join((
+            step.description,
+            step.expected_outcome,
+            str(step.params.get("prompt", "")),
+        )).strip().lower()
+        compact = re.sub(r"[\s，。！？；：、'\"“”‘’()（）]+", "", text)
+        if any(word in text for word in ("微信", "wechat", "weixin")) and any(
+            word in text for word in ("登录", "扫码", "手机确认")
+        ):
+            return "request_user_input:wechat_login_confirmation"
+        return f"request_user_input:{compact}"
+
+    @classmethod
+    def _dedupe_interactive_steps(cls, steps: list[Step]) -> list[Step]:
+        """Remove repeated prompts and adjacent duplicate desktop key actions."""
+        seen: set[str] = set()
+        result: list[Step] = []
+        for step in steps:
+            key = cls._interactive_step_key(step)
+            if key is not None:
+                if key in seen:
+                    logger.info(f"Dropped duplicate interactive step: {step.description}")
+                    continue
+                seen.add(key)
+            if step.tool_name == "desktop_keypress" and result:
+                previous = result[-1]
+                if previous.tool_name == "desktop_keypress":
+                    current_action = (
+                        str(step.params.get("keys", "")).strip().lower(),
+                        str(step.params.get("app_name", "")).strip().lower(),
+                        int(step.params.get("presses", 1)),
+                    )
+                    previous_action = (
+                        str(previous.params.get("keys", "")).strip().lower(),
+                        str(previous.params.get("app_name", "")).strip().lower(),
+                        int(previous.params.get("presses", 1)),
+                    )
+                    if current_action == previous_action:
+                        logger.info(f"Dropped duplicate desktop keypress: {current_action}")
+                        continue
+            result.append(step)
+        return result
+
     @staticmethod
     def _merge_replan(
         current_steps: list[Any],
@@ -184,9 +254,22 @@ class AgentLoop:
     ) -> list[Any]:
         """替换失败步骤，并按 Planner 声明决定是否保留旧后续步骤。"""
         remaining = current_steps[step_index + 1:] if preserve_remaining else []
-        return current_steps[:step_index] + new_steps + remaining
+        merged = current_steps[:step_index] + new_steps + remaining
+        return AgentLoop._dedupe_interactive_steps(merged)
 
     async def _execute_runtime_step(self, step: Any) -> ActionResult:
+        if self._is_vision_step(step) and self.state.vision_circuit_open:
+            msg = (
+                "[VISION_UNAVAILABLE] Vision disabled for the current task after "
+                "repeated timeouts; use one manual confirmation and continue with "
+                "non-visual desktop tools"
+            )
+            return ActionResult(
+                step_id=step.id,
+                success=False,
+                error=msg,
+                summary=msg,
+            )
         unresolved_refs = self._unresolved_param_refs(step.params)
         if unresolved_refs:
             refs = ", ".join(sorted(set(unresolved_refs)))
@@ -203,6 +286,8 @@ class AgentLoop:
     async def run(self, task: Task) -> LoopResult:
         logger.info(f"AgentLoop starting task: {task.goal}")
         task.mark_running()
+        self.state.vision_timeout_failures = 0
+        self.state.vision_circuit_open = False
         self.events.clear_history()
 
         # 1. 规划
@@ -215,8 +300,8 @@ class AgentLoop:
             await self.events.emit(AgentEvent.error(reason))
             return LoopResult(success=False, task=task, summary=reason)
 
-        task.steps = steps
-        await self.events.emit(AgentEvent.plan_done(steps))
+        task.steps = self._dedupe_interactive_steps(steps)
+        await self.events.emit(AgentEvent.plan_done(task.steps))
         total_start = time.time()
 
         # 2. 执行循环
@@ -274,7 +359,7 @@ class AgentLoop:
                         total_steps=self.state.step_count,
                     )
 
-                task.steps.extend(new_steps)
+                task.steps = self._dedupe_interactive_steps(task.steps + new_steps)
                 await self.events.emit(AgentEvent.plan_done(task.steps))
                 continue
 
@@ -380,42 +465,52 @@ class AgentLoop:
                 logger.warning(f"Step [{step.id}] failed: {reason}")
                 self.state.record_failure()
                 self.memory.remember_error(reason)
+                self._record_vision_failure(step, reason)
 
                 retries = 0
+                retry_limit = self._retry_limit(step)
                 user_cancelled = False
                 user_timeout = False
                 env_error = False
                 # 认证/授权错误重试无意义，直接跳过重试阶段
                 if reason.startswith("[AUTH_ERR]"):
                     reason = reason.replace("[AUTH_ERR] ", "")
-                    retries = self.config.agent.retry_max
+                    retries = retry_limit
                 if reason.startswith("[ENV_ERR]"):
                     reason = reason.replace("[ENV_ERR] ", "")
-                    retries = self.config.agent.retry_max
+                    retries = retry_limit
                     env_error = True
                 # 用户取消 — 跳过重试且不进入 replan
                 if reason.startswith("[USER_CANCELLED]"):
                     reason = reason.replace("[USER_CANCELLED] ", "")
-                    retries = self.config.agent.retry_max
+                    retries = retry_limit
                     user_cancelled = True
                 # 用户超时 — 跳过重试但可以 replan
                 if reason.startswith("[USER_TIMEOUT]"):
                     reason = reason.replace("[USER_TIMEOUT] ", "")
-                    retries = self.config.agent.retry_max
+                    retries = retry_limit
                     user_timeout = True
-                while retries < self.config.agent.retry_max and not ok:
+                if reason.startswith("[VISION_UNAVAILABLE]"):
+                    retry_limit = 0
+                if self._is_vision_timeout(reason) and self.state.vision_circuit_open:
+                    retry_limit = 0
+                while retries < retry_limit and not ok:
                     retries += 1
                     await self.events.emit(
-                        AgentEvent.step_retry(step, retries, self.config.agent.retry_max, reason)
+                        AgentEvent.step_retry(step, retries, retry_limit, reason)
                     )
                     runtime_step = self._runtime_step(step)
                     result = await self._execute_runtime_step(runtime_step)
                     self.memory.commit(step, result)
                     await self.events.emit(AgentEvent.step_done(step, result))
                     ok, reason = await self.verifier.check(step, result)
+                    if not ok:
+                        self._record_vision_failure(step, reason)
+                        if self.state.vision_circuit_open:
+                            retry_limit = retries
                     if not ok and reason.startswith("[ENV_ERR]"):
                         reason = reason.replace("[ENV_ERR] ", "")
-                        retries = self.config.agent.retry_max
+                        retries = retry_limit
                         env_error = True
                     # 工具反复成功但 Verifier 反复拒绝 → 信任工具
                     if not ok and result.success:
@@ -472,7 +567,6 @@ class AgentLoop:
                             f"Replan merged: {len(new_steps)} new + {kept_count} retained = "
                             f"{len(new_steps) + kept_count} total steps ahead"
                         )
-                        self.state.record_success()
                         continue
                     else:
                         task.mark_failed()

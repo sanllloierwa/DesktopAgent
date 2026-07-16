@@ -44,6 +44,8 @@ class Planner:
 关键规则 — 原生桌面应用:
 9c. 浏览器工具 click、type_text、get_dom 只能操作 Playwright 浏览器页面，严禁用于微信、Word、记事本等原生桌面窗口。
 9d. 操作原生应用前先调用 focus_window；使用 desktop_keypress 发送快捷键/Enter/Tab，使用 desktop_type_text 粘贴文本。
+    desktop_keypress 和 desktop_type_text 必须设置 app_name，工具会在每次输入前重新聚焦并验证目标窗口；
+    微信统一使用 app_name="wechat"。缺少 app_name 的桌面输入步骤无效。
 9e. 需要视觉坐标点击时，必须严格规划以下链路，不能从 analyze_screen 的自然语言回答中猜坐标：
     禁止根据自然语言描述或历史截图臆造坐标。
     1) desktop_screenshot 获取图片及 width/height/left/top；
@@ -62,10 +64,13 @@ class Planner:
     - 如果任务明确要求登录，使用 request_user_input 请用户在微信客户端完成扫码或手机确认，完成后仅回复“已登录”；
       不要询问登录方式，不要索要微信账号、手机号或密码；
     - 用户确认后重新 focus_window、截图并分析，确认已经进入微信主界面；
-    - focus_window 后用 desktop_keypress(ctrl+f) 打开搜索，desktop_keypress(ctrl+a) 清空搜索框，
-      desktop_type_text 输入目标群名，desktop_keypress(enter) 进入群聊；
+    - focus_window 后用 desktop_keypress(keys="ctrl+f", app_name="wechat") 打开搜索，
+      desktop_keypress(keys="ctrl+a", app_name="wechat") 清空搜索框，
+      desktop_type_text(text=目标群名, app_name="wechat") 输入目标群名，
+      desktop_keypress(keys="enter", app_name="wechat") 进入群聊；
     - 截图并分析，确认当前聊天标题与目标群名一致；
-    - focus_window 后用 desktop_type_text 输入消息正文，再用 desktop_keypress(enter) 提交发送；
+    - focus_window 后用 desktop_type_text(text=消息正文, app_name="wechat") 输入消息，
+      再用 desktop_keypress(keys="enter", app_name="wechat") 提交发送；
     - 最后截图并分析消息是否出现在聊天记录中。最后一步不能停在登录状态、搜索结果或待发送输入框。
 
 关键规则 — 网页表单操作（DOM 优先）:
@@ -210,11 +215,15 @@ class Planner:
 - 不要使用与失败步骤相同的工具但只改一个参数值（如 wait_until / timeout），这不会解决问题
 - 网页表单操作：如果失败原因是选择器找不到（如 "locator resolved to 0 elements"），应先规划 get_dom 获取页面真实元素，再用 text 策略定位输入框
 - 如果错误是超时或网络相关（timeout / refused / unreachable / ENOTFOUND）或认证失败（401 / 403 / 无效的令牌），应返回 fallback 说明，不要继续尝试同类操作
+- 如果失败原因含 [VISION_TIMEOUT]，不要重复同一个视觉步骤；最多改用一次人工确认并保留后续非视觉操作。
+- 如果失败原因含 [VISION_UNAVAILABLE]，说明本任务的视觉熔断器已经打开：禁止继续规划 analyze_screen 或 locate_screen_element；如确有必要，只请求一次人工确认，然后继续 focus_window、desktop_keypress、desktop_type_text 等非视觉步骤。
+- 当前上下文中已经有成功的微信登录人工确认时，不要再次规划 request_user_input 确认同一登录状态。
 - 如果失败步骤是 request_user_input 且原因包含"用户取消"，应返回 fallback 说明，不要尝试其他工具替代
 - 如果密码输入失败且 DOM/页面是验证码登录，应改走手机号 + 短信验证码流程，不要继续寻找密码框
 - 如果"获取验证码/发送验证码"按钮点击失败，不要请求用户输入短信验证码；应先 get_dom 检查按钮真实文本、禁用状态或人机验证提示。若存在 CAPTCHA/滑块/安全验证，则请求用户手动完成验证并确认。
 - 如果登录按钮点击后页面无变化，应 get_dom 检查协议勾选、人机验证、按钮禁用状态或错误提示，不要直接判定任务完成。
 - 原生桌面应用不能使用浏览器 click/type_text/get_dom。微信任务应使用 focus_window、desktop_keypress、desktop_type_text、desktop_screenshot 和 analyze_screen。
+- 微信的 desktop_keypress 和 desktop_type_text 必须包含 app_name="wechat"；如果失败原因含 [TARGET_REQUIRED]，修复参数后保留后续步骤。
 - 视觉坐标操作必须使用 desktop_screenshot → locate_screen_element → desktop_click → desktop_screenshot → analyze_screen；禁止根据自然语言描述或历史截图臆造坐标。
 - 微信消息任务的替代计划必须最终进入目标聊天、输入消息并用 Enter 提交；仅截图或判断登录状态不是有效恢复。
 - 真正有效的替代方案：换工具、换目标、换定位方式，不是换等待时间

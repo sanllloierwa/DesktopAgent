@@ -38,6 +38,19 @@ class StepGuard:
         self.memory = memory
 
     async def before_step(self, task: Task, step: Step) -> GuardResult:
+        if self._is_wechat_task(task) and step.tool_name in {
+            "desktop_keypress", "desktop_type_text"
+        }:
+            app_name = str(step.params.get("app_name", "")).strip().lower()
+            if app_name not in {"wechat", "weixin", "微信"}:
+                return GuardResult(
+                    decision=GuardDecision.REPLAN,
+                    reason=(
+                        f"[TARGET_REQUIRED] 微信桌面输入步骤 {step.tool_name} "
+                        "必须设置 app_name='wechat'，以便输入前验证微信确实位于前台"
+                    ),
+                )
+
         if (
             self._is_login_task(task)
             and self._has_navigated_to_page()
@@ -84,6 +97,10 @@ class StepGuard:
     def _is_login_task(self, task: Task) -> bool:
         goal = task.goal.lower()
         return any(word in goal for word in ("登录", "登陆", "login", "sign in"))
+
+    def _is_wechat_task(self, task: Task) -> bool:
+        goal = task.goal.lower()
+        return any(word in goal for word in ("微信", "wechat", "weixin"))
 
     def _platform_for_goal(self, goal: str) -> str:
         if "知乎" in goal or "zhihu" in goal.lower():

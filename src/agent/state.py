@@ -23,6 +23,8 @@ class AgentState:
     current_task_id: str = ""
     step_count: int = 0
     consecutive_failures: int = 0
+    vision_timeout_failures: int = 0
+    vision_circuit_open: bool = False
 
     # 上下文缓存
     last_screenshot_base64: str | None = None
@@ -38,6 +40,11 @@ class AgentState:
     def record_success(self) -> None:
         self.consecutive_failures = 0
         self.step_count += 1
+
+    def record_vision_timeout(self, threshold: int = 2) -> None:
+        self.vision_timeout_failures += 1
+        if self.vision_timeout_failures >= threshold:
+            self.vision_circuit_open = True
 
     def is_stuck(self, threshold: int = 5) -> bool:
         """连续失败超过阈值，判定为陷入困境"""

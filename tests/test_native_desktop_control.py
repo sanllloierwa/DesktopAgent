@@ -16,14 +16,17 @@ def test_key_codes_support_wechat_search_shortcut() -> None:
 async def test_desktop_keypress_repeats_and_reports_result(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(native_control, "_send_key_chord", calls.append)
+    monkeypatch.setattr(native_control, "activate_window", lambda _app: (123, "微信"))
     monkeypatch.setattr(native_control.time, "sleep", lambda _seconds: None)
 
     result = await native_control.DesktopKeypressTool().execute(
-        "ctrl+f", presses=2, wait_after=0
+        "ctrl+f", app_name="wechat", presses=2, wait_after=0
     )
 
     assert result["success"] is True
     assert calls == ["ctrl+f", "ctrl+f"]
+    assert result["foreground_verified"] is True
+    assert result["target_app"] == "wechat"
 
 
 async def test_focus_window_returns_clear_failure(monkeypatch) -> None:
@@ -33,6 +36,40 @@ async def test_focus_window_returns_clear_failure(monkeypatch) -> None:
 
     assert result["success"] is False
     assert "No visible window" in result["error"]
+
+
+async def test_keypress_sends_nothing_when_target_cannot_be_verified(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fail_activation(_app):
+        raise RuntimeError("Target window did not become foreground")
+
+    monkeypatch.setattr(native_control, "activate_window", fail_activation)
+    monkeypatch.setattr(native_control, "_send_key_chord", calls.append)
+
+    result = await native_control.DesktopKeypressTool().execute(
+        "enter", app_name="wechat"
+    )
+
+    assert result["success"] is False
+    assert calls == []
+    assert "did not become foreground" in result["error"]
+
+
+def test_activate_window_requires_verified_foreground(monkeypatch) -> None:
+    clock = iter([0.0, 0.0, 0.3])
+    monkeypatch.setattr(native_control, "_find_window", lambda _app: (123, "微信"))
+    monkeypatch.setattr(native_control, "_focus_window", lambda _hwnd: None)
+    monkeypatch.setattr(native_control, "_foreground_matches", lambda _hwnd: False)
+    monkeypatch.setattr(native_control.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(native_control.time, "sleep", lambda _seconds: None)
+
+    try:
+        native_control.activate_window("wechat", timeout=0.2)
+    except RuntimeError as exc:
+        assert "input was not sent" in str(exc)
+    else:
+        raise AssertionError("expected foreground verification failure")
 
 
 async def test_click_accepts_negative_multi_monitor_coordinate(monkeypatch) -> None:

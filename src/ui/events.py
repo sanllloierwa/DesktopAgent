@@ -107,6 +107,11 @@ class AgentEvent:
 EventHandler = Callable[[AgentEvent], Awaitable[None]]
 
 
+def task_done_console_label(data: dict[str, Any]) -> str:
+    """Return an unambiguous console label for a terminal task event."""
+    return "DONE" if data.get("success", False) else "FAILED"
+
+
 class EventBus:
     """异步事件总线：Agent 发布事件，UI 订阅事件"""
 

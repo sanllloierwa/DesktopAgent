@@ -39,6 +39,9 @@ def _error_message(exc: Exception) -> str:
         or "invalid token" in err_msg.lower()
     ):
         return "[AUTH_ERR] " + err_msg
+    lowered = err_msg.lower()
+    if "request timed out" in lowered or "vision mcp timed out" in lowered:
+        return "[VISION_TIMEOUT] " + err_msg
     return err_msg
 
 

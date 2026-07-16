@@ -33,6 +33,9 @@ _APP_ALIASES: dict[str, tuple[str, ...]] = {
     "wps office": ("wps", "winword"),
     "kingsoft wps": ("wps",),
     "wps writer": ("wps", "winword"),
+    "wechat": ("微信", "weixin", "wechat"),
+    "weixin": ("微信", "wechat", "weixin"),
+    "微信": ("wechat", "weixin"),
 }
 
 
