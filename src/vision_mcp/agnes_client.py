@@ -1,13 +1,15 @@
-"""Small MCP stdio client used by the main Agent process."""
+"""Small multimodal MCP stdio client used by the main Agent process."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import sys
+import time
 from typing import Any
 
 from src.utils.config import AppConfig, load_config
+from src.vision_mcp.artifacts import write_mcp_artifact
 
 
 def exception_text(exc: BaseException) -> str:
@@ -53,22 +55,66 @@ async def call_agnes_tool(
     from mcp.client.stdio import stdio_client
 
     config = config or load_config()
+    call_arguments = dict(arguments or {})
+    started = time.perf_counter()
     try:
         async with asyncio.timeout(config.vision.timeout_seconds):
             async with stdio_client(_server_parameters(config)) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
-                    result = await session.call_tool(tool_name, arguments or {})
+                    result = await session.call_tool(tool_name, call_arguments)
                     if getattr(result, "isError", False):
                         payload = _decode_result(result)
                         raise RuntimeError(payload.get("answer") or str(payload))
-                    return _decode_result(result)
+                    payload = _decode_result(result)
     except TimeoutError as exc:
-        raise TimeoutError(
+        normalized = TimeoutError(
             f"Vision MCP timed out after {config.vision.timeout_seconds:g}s"
-        ) from exc
+        )
+        artifact_path = write_mcp_artifact(
+            tool_name=tool_name,
+            arguments=call_arguments,
+            config=config,
+            error=str(normalized),
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+        if artifact_path is not None:
+            setattr(normalized, "mcp_artifact_path", str(artifact_path))
+        raise normalized from exc
     except BaseExceptionGroup as exc:
-        raise RuntimeError(exception_text(exc)) from exc
+        normalized = RuntimeError(exception_text(exc))
+        artifact_path = write_mcp_artifact(
+            tool_name=tool_name,
+            arguments=call_arguments,
+            config=config,
+            error=str(normalized),
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+        if artifact_path is not None:
+            setattr(normalized, "mcp_artifact_path", str(artifact_path))
+        raise normalized from exc
+    except Exception as exc:
+        artifact_path = write_mcp_artifact(
+            tool_name=tool_name,
+            arguments=call_arguments,
+            config=config,
+            error=exception_text(exc),
+            duration_ms=(time.perf_counter() - started) * 1000,
+        )
+        if artifact_path is not None:
+            setattr(exc, "mcp_artifact_path", str(artifact_path))
+        raise
+
+    artifact_path = write_mcp_artifact(
+        tool_name=tool_name,
+        arguments=call_arguments,
+        config=config,
+        response=payload,
+        duration_ms=(time.perf_counter() - started) * 1000,
+    )
+    if artifact_path is not None:
+        payload["mcp_artifact_path"] = str(artifact_path)
+    return payload
 
 
 async def mcp_health(config: AppConfig | None = None) -> dict[str, Any]:
@@ -82,7 +128,7 @@ async def mcp_analyze_image(
     config: AppConfig | None = None,
 ) -> dict[str, Any]:
     return await call_agnes_tool(
-        "analyze_image_with_agnes",
+        "analyze_image",
         {
             "image_base64": image_base64,
             "question": question,

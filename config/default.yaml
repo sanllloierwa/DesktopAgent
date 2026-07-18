@@ -6,20 +6,23 @@ agent:
   screenshot_on_error: true
 
 llm:
-  provider: deepseek            # deepseek | anthropic | openai | local
+  provider: deepseek            # deepseek | anthropic | openai | kimi | local
   model: deepseek-chat          # deepseek-chat (V3) | deepseek-reasoner (R1)
   base_url: "https://api.deepseek.com"
   temperature: 0.3
   max_tokens: 4096
 
 vision:
-  provider: agnes               # agnes | anthropic | openai | deepseek | local
+  provider: agnes               # agnes | kimi | anthropic | openai | deepseek | local
   model: agnes-2.0-flash        # agnes-2.0-flash (推荐，256K上下文，支持视觉)
   base_url: "https://apihub.agnes-ai.com/v1"
   transport: mcp                # mcp | direct
   mcp_command: ""               # 留空时使用当前 Python 解释器
   mcp_args: ["-m", "src.vision_mcp.agnes_server"]
   timeout_seconds: 60
+  artifact_output_enabled: true  # 每次 MCP 调用输出请求、响应和截图 ZIP
+  artifact_dir: ""              # 留空时写入系统临时目录/desktop-agent/vision-mcp
+  artifact_retention: 50         # 最多保留最近的 ZIP 调试包
 
 image_gen:
   provider: openai

@@ -23,6 +23,7 @@ def get_api_key(provider: str) -> str:
         "anthropic": settings.anthropic_api_key or None,
         "openai": settings.openai_api_key or None,
         "agnes": settings.agnes_api_key or None,
+        "kimi": settings.kimi_api_key or settings.moonshot_api_key or None,
     }
     key = key_map.get(provider)
     if key:

@@ -52,7 +52,11 @@ def main() -> None:
         result = asyncio.run(_run(args))
         print(json.dumps(result, ensure_ascii=False, indent=2))
     except Exception as exc:
-        print(json.dumps({"success": False, "error": exception_text(exc)}, ensure_ascii=False, indent=2))
+        payload = {"success": False, "error": exception_text(exc)}
+        artifact_path = getattr(exc, "mcp_artifact_path", None)
+        if artifact_path:
+            payload["mcp_artifact_path"] = str(artifact_path)
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         raise SystemExit(1) from exc
 
 

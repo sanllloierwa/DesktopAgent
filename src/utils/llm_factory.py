@@ -1,4 +1,4 @@
-"""LLM client factory — 统一 Anthropic / OpenAI / DeepSeek / Agnes / Local 接口"""
+"""LLM client factory — 统一 Anthropic / OpenAI / DeepSeek / Agnes / Kimi / Local 接口"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from src.utils.secret import get_api_key
 # Provider 默认 base URL
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
+KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 
 
 class ContentBlock:
@@ -26,11 +27,12 @@ class LLMResponse:
 
 
 class _OpenAICompatAdapter:
-    """OpenAI 兼容接口适配（OpenAI / DeepSeek / Agnes / Local）"""
+    """OpenAI 兼容接口适配（OpenAI / DeepSeek / Agnes / Kimi / Local）"""
 
-    def __init__(self, client: Any, model: str) -> None:
+    def __init__(self, client: Any, model: str, provider: str = "") -> None:
         self._client = client
         self.model = model
+        self.provider = provider
 
     @property
     def messages(self) -> "_OpenAICompatAdapter":
@@ -50,12 +52,18 @@ class _OpenAICompatAdapter:
         for m in (messages or []):
             openai_msgs.append({"role": m["role"], "content": m["content"]})
 
-        resp = await self._client.chat.completions.create(
-            model=model or self.model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            messages=openai_msgs,
-        )
+        request: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": openai_msgs,
+        }
+        if self.provider == "kimi":
+            # Kimi K3 fixes temperature at 1.0 and rejects other explicit values.
+            request["max_completion_tokens"] = max_tokens
+        else:
+            request["max_tokens"] = max_tokens
+            request["temperature"] = temperature
+
+        resp = await self._client.chat.completions.create(**request)
         text = resp.choices[0].message.content or ""
         return LLMResponse(text, raw=resp)
 
@@ -101,27 +109,34 @@ def _create_client(provider: str, model: str, base_url_override: str = "") -> An
         api_key = get_api_key("deepseek")
         base_url = base_url_override or DEEPSEEK_BASE_URL
         client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
-        return _OpenAICompatAdapter(client, model)
+        return _OpenAICompatAdapter(client, model, provider)
 
     elif provider == "openai":
         import openai
         api_key = get_api_key("openai")
         client = openai.AsyncOpenAI(api_key=api_key)
-        return _OpenAICompatAdapter(client, model)
+        return _OpenAICompatAdapter(client, model, provider)
 
     elif provider == "agnes":
         import openai
         api_key = get_api_key("agnes")
         base_url = base_url_override or AGNES_BASE_URL
         client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
-        return _OpenAICompatAdapter(client, model)
+        return _OpenAICompatAdapter(client, model, provider)
+
+    elif provider == "kimi":
+        import openai
+        api_key = get_api_key("kimi")
+        base_url = base_url_override or KIMI_BASE_URL
+        client = openai.AsyncOpenAI(base_url=base_url, api_key=api_key)
+        return _OpenAICompatAdapter(client, model, provider)
 
     elif provider == "local":
         import openai
         from src.utils.secret import get_local_base_url
         base_url = base_url_override or get_local_base_url() or "http://localhost:11434/v1"
         client = openai.AsyncOpenAI(base_url=base_url, api_key="ollama")
-        return _OpenAICompatAdapter(client, model)
+        return _OpenAICompatAdapter(client, model, provider)
 
     else:
         raise ValueError(f"Unknown LLM provider: {provider}")
@@ -139,7 +154,12 @@ def create_llm_client(config: AppConfig | None = None, provider_override: str | 
     us = get_user_settings()
     provider = provider_override or us.default_provider or config.llm.provider
     model = us.default_model or config.llm.model
-    base_url = getattr(config.llm, "base_url", "") or ""
+    # A UI-selected provider must not inherit another provider's YAML endpoint.
+    base_url = (
+        getattr(config.llm, "base_url", "") or ""
+        if provider == config.llm.provider
+        else ""
+    )
 
     return _create_client(provider, model, base_url)
 

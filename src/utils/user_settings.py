@@ -21,6 +21,7 @@ class UserSettings:
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     agnes_api_key: str = ""
+    kimi_api_key: str = ""
     default_provider: str = "deepseek"
     default_model: str = "deepseek-chat"
     last_used_provider: str = ""
@@ -80,6 +81,7 @@ def load_user_settings() -> UserSettings:
         "anthropic_api_key": "ANTHROPIC_API_KEY",
         "openai_api_key": "OPENAI_API_KEY",
         "agnes_api_key": "AGNES_API_KEY",
+        "kimi_api_key": "KIMI_API_KEY",
     }
     for attr, env_var in env_map.items():
         env_val = os.environ.get(env_var, "")
@@ -99,6 +101,7 @@ def save_user_settings(settings: UserSettings) -> None:
         "anthropic_api_key": settings.anthropic_api_key,
         "openai_api_key": settings.openai_api_key,
         "agnes_api_key": settings.agnes_api_key,
+        "kimi_api_key": settings.kimi_api_key,
         "default_provider": settings.default_provider,
         "default_model": settings.default_model,
         "last_used_provider": settings.last_used_provider,

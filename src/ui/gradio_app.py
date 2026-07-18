@@ -230,6 +230,7 @@ PROVIDER_INFO = {
         "name": "DeepSeek",
         "models": ["deepseek-chat", "deepseek-reasoner"],
         "help": "https://platform.deepseek.com/api_keys",
+        "base_url": "https://api.deepseek.com",
     },
     "openai": {
         "name": "OpenAI",
@@ -245,6 +246,12 @@ PROVIDER_INFO = {
         "name": "Agnes AI",
         "models": ["agnes-2.0-flash"],
         "help": "https://platform.agnes-ai.com/",
+    },
+    "kimi": {
+        "name": "Kimi",
+        "models": ["kimi-k3"],
+        "help": "https://platform.kimi.ai/",
+        "base_url": "https://api.moonshot.ai/v1",
     },
 }
 
@@ -330,6 +337,16 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                     ag_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
                     ag_status = gr.HTML("", scale=1)
 
+                kimi_key = gr.Textbox(
+                    label="Kimi API Key",
+                    value=user_settings.get_key("kimi"),
+                    type="password",
+                    placeholder="sk-...",
+                )
+                with gr.Row():
+                    kimi_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
+                    kimi_status = gr.HTML("", scale=1)
+
             with gr.Row():
                 save_btn = gr.Button("保存设置", variant="primary", scale=0)
                 settings_msg = gr.Textbox(label="", interactive=False, scale=1, show_label=False, container=False)
@@ -337,6 +354,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
             gr.HTML("<hr><p style='color:#999;font-size:12px;'>"
                      "密钥优先级：UI 保存的设置 > 环境变量 > .env 文件<br>"
                      "获取 DeepSeek Key: <a href='https://platform.deepseek.com/api_keys' target='_blank'>platform.deepseek.com/api_keys</a><br>"
+                     "获取 Kimi Key: <a href='https://platform.kimi.ai/' target='_blank'>platform.kimi.ai</a><br>"
                      "DeepSeek API 文档: <a href='https://api-docs.deepseek.com' target='_blank'>api-docs.deepseek.com</a>"
                      "</p>")
 
@@ -397,16 +415,18 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
         oa_show.change(on_show_key, inputs=[oa_key, oa_show], outputs=[oa_key])
         an_show.change(on_show_key, inputs=[an_key, an_show], outputs=[an_key])
         ag_show.change(on_show_key, inputs=[ag_key, ag_show], outputs=[ag_key])
+        kimi_show.change(on_show_key, inputs=[kimi_key, kimi_show], outputs=[kimi_key])
 
         def on_save_settings(
             provider: str, model: str,
-            ds: str, oa: str, an: str, ag: str,
+            ds: str, oa: str, an: str, ag: str, kimi: str,
         ) -> tuple:
             settings = UserSettings(
                 deepseek_api_key=ds.strip(),
                 openai_api_key=oa.strip(),
                 anthropic_api_key=an.strip(),
                 agnes_api_key=ag.strip(),
+                kimi_api_key=kimi.strip(),
                 default_provider=provider,
                 default_model=model,
             )
@@ -416,6 +436,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
             config = load_config()
             config.llm.provider = provider
             config.llm.model = model
+            config.llm.base_url = PROVIDER_INFO.get(provider, {}).get("base_url", "")
 
             # 更新密钥状态提示
             def key_status(val: str, name: str) -> str:
@@ -430,12 +451,13 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 key_status(oa.strip(), "OpenAI"),
                 key_status(an.strip(), "Anthropic"),
                 key_status(ag.strip(), "Agnes AI"),
+                key_status(kimi.strip(), "Kimi"),
             )
 
         save_btn.click(
             on_save_settings,
-            inputs=[provider_dd, model_dd, ds_key, oa_key, an_key, ag_key],
-            outputs=[settings_msg, ds_status, oa_status, an_status, ag_status],
+            inputs=[provider_dd, model_dd, ds_key, oa_key, an_key, ag_key, kimi_key],
+            outputs=[settings_msg, ds_status, oa_status, an_status, ag_status, kimi_status],
         )
 
         # ==================================================================

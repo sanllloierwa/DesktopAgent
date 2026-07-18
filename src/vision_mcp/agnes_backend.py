@@ -1,4 +1,4 @@
-"""Agnes vision backend shared by the MCP server and direct fallback."""
+"""Configurable multimodal backend shared by MCP and direct fallback."""
 
 from __future__ import annotations
 

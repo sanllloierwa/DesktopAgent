@@ -37,6 +37,9 @@ class VisionConfig(BaseModel):
     mcp_command: str = ""
     mcp_args: list[str] = Field(default_factory=lambda: ["-m", "src.vision_mcp.agnes_server"])
     timeout_seconds: float = 60.0
+    artifact_output_enabled: bool = True
+    artifact_dir: str = ""
+    artifact_retention: int = 50
 
 
 class ImageGenConfig(BaseModel):
@@ -82,6 +85,8 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     agnes_api_key: str = ""
+    kimi_api_key: str = ""
+    moonshot_api_key: str = ""
     local_llm_base_url: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

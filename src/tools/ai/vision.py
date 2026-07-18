@@ -45,6 +45,14 @@ def _error_message(exc: Exception) -> str:
     return err_msg
 
 
+def _artifact_output(source: Any) -> dict[str, str]:
+    if isinstance(source, dict):
+        path = source.get("mcp_artifact_path")
+    else:
+        path = getattr(source, "mcp_artifact_path", None)
+    return {"mcp_artifact_path": str(path)} if path else {}
+
+
 async def _run_vision(image_base64: str, question: str) -> tuple[dict[str, Any], Any]:
     config = load_config()
     if config.vision.transport == "mcp":
@@ -85,11 +93,12 @@ class AnalyzeScreenTool(BaseTool):
                 "vision_provider": result.get("provider"),
                 "vision_model": result.get("model"),
                 "vision_transport": config.vision.transport,
+                **_artifact_output(result),
             }
         except Exception as exc:
             err_msg = _error_message(exc)
             logger.error(f"Vision analysis failed: {err_msg}")
-            return {"success": False, "error": err_msg}
+            return {"success": False, "error": err_msg, **_artifact_output(exc)}
 
 
 class LocateScreenElementTool(BaseTool):
@@ -156,6 +165,7 @@ class LocateScreenElementTool(BaseTool):
                 return {
                     "success": False,
                     "error": f"Target not found: {payload.get('reason', target)}",
+                    **_artifact_output(result),
                 }
 
             bbox = payload.get("bbox")
@@ -181,6 +191,7 @@ class LocateScreenElementTool(BaseTool):
                         f"Target confidence {confidence:.2f} is below required "
                         f"{threshold:.2f}: {payload.get('reason', target)}"
                     ),
+                    **_artifact_output(result),
                 }
 
             absolute_bbox = [
@@ -207,8 +218,9 @@ class LocateScreenElementTool(BaseTool):
                 "vision_provider": result.get("provider"),
                 "vision_model": result.get("model"),
                 "vision_transport": config.vision.transport,
+                **_artifact_output(result),
             }
         except Exception as exc:
             err_msg = _error_message(exc)
             logger.error(f"Screen element location failed: {err_msg}")
-            return {"success": False, "error": err_msg}
+            return {"success": False, "error": err_msg, **_artifact_output(exc)}

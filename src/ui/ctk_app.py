@@ -155,6 +155,10 @@ PROVIDER_INFO = {
         "name": "Agnes AI",
         "models": ["agnes-2.0-flash"],
     },
+    "kimi": {
+        "name": "Kimi",
+        "models": ["kimi-k3"],
+    },
 }
 
 
@@ -289,6 +293,7 @@ class CtkDesktopAgent:
         self._build_key_row(keys_frame, "OpenAI API Key", "openai", 1)
         self._build_key_row(keys_frame, "Anthropic API Key", "anthropic", 2)
         self._build_key_row(keys_frame, "Agnes AI API Key", "agnes", 3)
+        self._build_key_row(keys_frame, "Kimi API Key", "kimi", 4)
 
         # Save button
         save_frame = ctk.CTkFrame(self.settings_tab, fg_color="transparent")
@@ -303,7 +308,10 @@ class CtkDesktopAgent:
         # 底部信息
         footer = ctk.CTkLabel(
             self.settings_tab,
-            text="密钥优先级：UI 保存 > 环境变量 > .env\n获取 DeepSeek Key: platform.deepseek.com/api_keys",
+            text=(
+                "密钥优先级：UI 保存 > 环境变量 > .env\n"
+                "Kimi Key: platform.kimi.ai  |  DeepSeek Key: platform.deepseek.com/api_keys"
+            ),
             font=ctk.CTkFont(size=11),
             text_color="gray",
         )
@@ -355,7 +363,7 @@ class CtkDesktopAgent:
         self.model_var.set(us.default_model)
         self._on_provider_changed(us.default_provider)
 
-        for p in ["deepseek", "openai", "anthropic", "agnes"]:
+        for p in ["deepseek", "openai", "anthropic", "agnes", "kimi"]:
             var = getattr(self, f"key_{p}", None)
             if var:
                 var.set(us.get_key(p))
@@ -373,6 +381,7 @@ class CtkDesktopAgent:
             openai_api_key=getattr(self, "key_openai").get().strip(),
             anthropic_api_key=getattr(self, "key_anthropic").get().strip(),
             agnes_api_key=getattr(self, "key_agnes").get().strip(),
+            kimi_api_key=getattr(self, "key_kimi").get().strip(),
             default_provider=self.provider_var.get(),
             default_model=self.model_var.get(),
         )

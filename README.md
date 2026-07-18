@@ -35,6 +35,7 @@ AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Ag
 | 功能 | 当前实现 | 测试状态 |
 | --- | --- | --- |
 | **Agnes MCP 视觉分析** | `desktop_screenshot → analyze_screen → src/vision_mcp`，支持 MCP/direct 两种传输 | 尚未进行长时间稳定性和复杂界面测试；已观察到上游请求偶发超时 |
+| **Kimi K3 文本与视觉** | OpenAI 兼容文本生成；视觉侧复用 `image_url` + MCP 链路 | 已完成参数与消息格式单元测试，尚未使用真实 Kimi Key 进行端到端测试 |
 | **结构化视觉定位** | `locate_screen_element` 返回目标边界框、物理屏幕坐标和置信度 | 尚未在不同 DPI、窗口缩放、遮挡和动态界面中进行真实点击测试 |
 | **模拟键鼠操作** | `focus_window`、`desktop_keypress`、`desktop_click`、`desktop_move_mouse`、`desktop_scroll`、`desktop_drag` | 尚未进行跨应用端到端测试；当前主要面向 Windows |
 | **多显示器/DPI 坐标** | 截图携带 `left/top/width/height`，启用 Per-Monitor DPI Awareness，并支持负坐标 | 尚未在多显示器排列和不同缩放比例组合下测试 |
@@ -76,12 +77,33 @@ desktop_screenshot
 ### 配置系统
 
 - YAML 配置文件（`config/default.yaml`）：Agent 限制、LLM 提供商/模型、浏览器设置、桌面应用路径、日志
-- 环境变量 / `.env`：API 密钥（DeepSeek、Anthropic、OpenAI）
+- 环境变量 / `.env`：API 密钥（DeepSeek、Anthropic、OpenAI、Agnes、Kimi）
 - UI 设置持久化（`~/.desktop-agent/settings.json`）：优先级 用户保存 > 环境变量 > .env
 
 ### LLM 多后端支持
 
-统一适配层（`src/utils/llm_factory.py`），支持 Anthropic、OpenAI、DeepSeek、Ollama 本地模型，一键切换。
+统一适配层（`src/utils/llm_factory.py`），支持 Anthropic、OpenAI、DeepSeek、Kimi K3、Agnes 和 Ollama 本地模型。Kimi K3 会使用其专用参数约束：不显式传入 `temperature`，并使用 `max_completion_tokens`。
+
+#### Kimi K3 配置
+
+文本生成可直接在 Gradio 或 CustomTkinter 的设置页选择 `kimi / kimi-k3` 并填写 Kimi API Key，也可在 `.env` 中配置：
+
+```dotenv
+KIMI_API_KEY=sk-xxx
+# 同时兼容官方环境变量名：MOONSHOT_API_KEY
+```
+
+如果希望由 Kimi K3 承担桌面截图分析，需要同时修改 `config/default.yaml` 中完整的视觉配置，不能只改模型名：
+
+```yaml
+vision:
+  provider: kimi
+  model: kimi-k3
+  base_url: "https://api.moonshot.ai/v1"
+  transport: mcp
+```
+
+当前仍保留 Agnes 为默认视觉模型；Kimi K3 视觉链路尚未使用真实桌面场景和真实 API Key 进行端到端测试。
 
 ### 事件系统
 
@@ -177,6 +199,29 @@ python -m src.main --interactive # 命令行 REPL
 python scripts/debug_agnes_mcp.py health
 ```
 
+### 视觉 MCP 调试产物
+
+视觉 MCP 默认会为每次调用生成一个 ZIP 调试包。未指定目录时，文件位于系统临时目录的
+`desktop-agent/vision-mcp` 子目录；`analyze_screen`、`locate_screen_element` 和调试脚本的
+输出中会包含绝对路径 `mcp_artifact_path`。
+
+每个 ZIP 包含：
+
+- `manifest.json`：调用时间、耗时、模型、传输方式和执行状态；
+- `request.json`：MCP 工具名以外的调用参数，截图 base64 会替换为简短引用；
+- `response.json` 或 `error.json`：MCP 返回内容或规范化错误；
+- `screenshot.png`（或对应图片后缀）：本次视觉请求实际使用的截图。
+
+可在 `config/default.yaml` 的 `vision` 节调整：
+
+```yaml
+artifact_output_enabled: true  # 是否输出调试包
+artifact_dir: ""              # 留空使用系统临时目录
+artifact_retention: 50         # 自动保留最近的文件数
+```
+
+调试包可能包含桌面上的敏感信息，仅应在本机排障时使用并及时清理。
+
 ## 项目结构
 
 ```text
@@ -200,7 +245,7 @@ DesktopAgent/
 - **Playwright** — 浏览器自动化
 - **pywinauto / uiautomation** — Windows UI 自动化
 - **pywin32** — COM 接口（WPS/Office 文档控制）
-- **Anthropic / OpenAI / DeepSeek** — 多 LLM 后端
+- **Anthropic / OpenAI / DeepSeek / Kimi / Agnes** — 多 LLM 与多模态后端
 - **Gradio / CustomTkinter** — Web 与原生双界面
 - **ChromaDB** — 长期记忆向量存储
 - **mss / Pillow / OpenCV** — 屏幕感知与图像处理
