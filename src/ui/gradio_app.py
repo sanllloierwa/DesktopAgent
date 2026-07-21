@@ -38,6 +38,7 @@ from src.utils.user_settings import (
     UserSettings,
     load_user_settings,
     save_user_settings,
+    save_model_selection,
     get_user_settings,
 )
 
@@ -249,9 +250,28 @@ PROVIDER_INFO = {
     },
     "kimi": {
         "name": "Kimi",
-        "models": ["kimi-k3"],
-        "help": "https://platform.kimi.ai/",
-        "base_url": "https://api.moonshot.ai/v1",
+        "models": ["kimi-k3", "kimi-k2.6"],
+        "help": "https://platform.kimi.com/",
+        "base_url": "https://api.moonshot.cn/v1",
+    },
+}
+
+VISION_PROVIDER_INFO = {
+    "agnes": {
+        "name": "Agnes AI",
+        "models": ["agnes-2.0-flash"],
+        "base_url": "https://apihub.agnes-ai.com/v1",
+    },
+    "kimi": {
+        "name": "Kimi",
+        "models": ["kimi-k3", "kimi-k2.6"],
+        "base_url": "https://api.moonshot.cn/v1",
+    },
+    "openai": {"name": "OpenAI", "models": ["gpt-4o", "gpt-4.1"], "base_url": ""},
+    "anthropic": {
+        "name": "Anthropic",
+        "models": ["claude-sonnet-4-6", "claude-opus-4-7"],
+        "base_url": "",
     },
 }
 
@@ -263,6 +283,13 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
         registry = ToolRegistry()
 
     user_settings = load_user_settings()
+    config = load_config()
+    vision_provider = user_settings.vision_provider or config.vision.provider
+    vision_model = user_settings.vision_model or config.vision.model
+    vision_models = VISION_PROVIDER_INFO.get(
+        vision_provider,
+        {"models": [vision_model]},
+    )["models"]
     bridge: UIBridge | None = None
     all_events: list[dict] = []
 
@@ -295,6 +322,21 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                     allow_custom_value=True,
                 )
 
+            with gr.Row():
+                vision_provider_dd = gr.Dropdown(
+                    label="视觉 Provider",
+                    choices=list(VISION_PROVIDER_INFO.keys()),
+                    value=vision_provider,
+                    scale=1,
+                )
+                vision_model_dd = gr.Dropdown(
+                    label="视觉模型",
+                    choices=vision_models,
+                    value=vision_model,
+                    scale=1,
+                    allow_custom_value=True,
+                )
+
             with gr.Group():
                 gr.HTML("<b>API Keys</b>")
                 ds_key = gr.Textbox(
@@ -305,7 +347,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 )
                 with gr.Row():
                     ds_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
-                    ds_status = gr.HTML("", scale=1)
+                    ds_status = gr.HTML("")
 
                 oa_key = gr.Textbox(
                     label="OpenAI API Key",
@@ -315,7 +357,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 )
                 with gr.Row():
                     oa_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
-                    oa_status = gr.HTML("", scale=1)
+                    oa_status = gr.HTML("")
 
                 an_key = gr.Textbox(
                     label="Anthropic API Key",
@@ -325,7 +367,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 )
                 with gr.Row():
                     an_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
-                    an_status = gr.HTML("", scale=1)
+                    an_status = gr.HTML("")
 
                 ag_key = gr.Textbox(
                     label="Agnes AI API Key",
@@ -335,7 +377,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 )
                 with gr.Row():
                     ag_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
-                    ag_status = gr.HTML("", scale=1)
+                    ag_status = gr.HTML("")
 
                 kimi_key = gr.Textbox(
                     label="Kimi API Key",
@@ -345,7 +387,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 )
                 with gr.Row():
                     kimi_show = gr.Checkbox(label="显示密钥", scale=0, min_width=80)
-                    kimi_status = gr.HTML("", scale=1)
+                    kimi_status = gr.HTML("")
 
             with gr.Row():
                 save_btn = gr.Button("保存设置", variant="primary", scale=0)
@@ -354,7 +396,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
             gr.HTML("<hr><p style='color:#999;font-size:12px;'>"
                      "密钥优先级：UI 保存的设置 > 环境变量 > .env 文件<br>"
                      "获取 DeepSeek Key: <a href='https://platform.deepseek.com/api_keys' target='_blank'>platform.deepseek.com/api_keys</a><br>"
-                     "获取 Kimi Key: <a href='https://platform.kimi.ai/' target='_blank'>platform.kimi.ai</a><br>"
+                     "获取 Kimi Key: <a href='https://platform.kimi.com/' target='_blank'>platform.kimi.com</a><br>"
                      "DeepSeek API 文档: <a href='https://api-docs.deepseek.com' target='_blank'>api-docs.deepseek.com</a>"
                      "</p>")
 
@@ -398,12 +440,48 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
 
         def on_provider_change(provider: str) -> tuple:
             info = PROVIDER_INFO.get(provider, PROVIDER_INFO["deepseek"])
-            return gr.Dropdown(choices=info["models"], value=info["models"][0])
+            model = info["models"][0]
+            save_model_selection(default_provider=provider, default_model=model)
+            return gr.Dropdown(choices=info["models"], value=model)
 
         provider_dd.change(
             on_provider_change,
             inputs=[provider_dd],
             outputs=[model_dd],
+        )
+
+        def on_model_change(provider: str, model: str) -> None:
+            save_model_selection(
+                default_provider=provider,
+                default_model=model,
+            )
+
+        model_dd.change(
+            on_model_change,
+            inputs=[provider_dd, model_dd],
+        )
+
+        def on_vision_provider_change(provider: str) -> tuple:
+            info = VISION_PROVIDER_INFO.get(provider, VISION_PROVIDER_INFO["agnes"])
+            model = info["models"][0]
+            save_model_selection(vision_provider=provider, vision_model=model)
+            return gr.Dropdown(choices=info["models"], value=model)
+
+        vision_provider_dd.change(
+            on_vision_provider_change,
+            inputs=[vision_provider_dd],
+            outputs=[vision_model_dd],
+        )
+
+        def on_vision_model_change(provider: str, model: str) -> None:
+            save_model_selection(
+                vision_provider=provider,
+                vision_model=model,
+            )
+
+        vision_model_dd.change(
+            on_vision_model_change,
+            inputs=[vision_provider_dd, vision_model_dd],
         )
 
         def on_show_key(key: str, show: bool) -> dict:
@@ -419,6 +497,7 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
 
         def on_save_settings(
             provider: str, model: str,
+            vision_provider: str, vision_model: str,
             ds: str, oa: str, an: str, ag: str, kimi: str,
         ) -> tuple:
             settings = UserSettings(
@@ -429,6 +508,8 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 kimi_api_key=kimi.strip(),
                 default_provider=provider,
                 default_model=model,
+                vision_provider=vision_provider,
+                vision_model=vision_model,
             )
             save_user_settings(settings)
 
@@ -437,6 +518,11 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
             config.llm.provider = provider
             config.llm.model = model
             config.llm.base_url = PROVIDER_INFO.get(provider, {}).get("base_url", "")
+            config.vision.provider = vision_provider
+            config.vision.model = vision_model
+            config.vision.base_url = VISION_PROVIDER_INFO.get(
+                vision_provider, {}
+            ).get("base_url", "")
 
             # 更新密钥状态提示
             def key_status(val: str, name: str) -> str:
@@ -446,7 +532,10 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 return f"<span style='color:#999;'>{name} 未配置</span>"
 
             return (
-                f"设置已保存 — Provider: {provider} / Model: {model}",
+                (
+                    f"设置已保存 — 主模型: {provider}/{model}; "
+                    f"视觉: {vision_provider}/{vision_model}"
+                ),
                 key_status(ds.strip(), "DeepSeek"),
                 key_status(oa.strip(), "OpenAI"),
                 key_status(an.strip(), "Anthropic"),
@@ -456,7 +545,10 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
 
         save_btn.click(
             on_save_settings,
-            inputs=[provider_dd, model_dd, ds_key, oa_key, an_key, ag_key, kimi_key],
+            inputs=[
+                provider_dd, model_dd, vision_provider_dd, vision_model_dd,
+                ds_key, oa_key, an_key, ag_key, kimi_key,
+            ],
             outputs=[settings_msg, ds_status, oa_status, an_status, ag_status, kimi_status],
         )
 

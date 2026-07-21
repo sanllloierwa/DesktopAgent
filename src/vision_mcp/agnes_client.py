@@ -126,6 +126,7 @@ async def mcp_analyze_image(
     question: str,
     media_type: str = "image/png",
     config: AppConfig | None = None,
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     return await call_agnes_tool(
         "analyze_image",
@@ -133,6 +134,7 @@ async def mcp_analyze_image(
             "image_base64": image_base64,
             "question": question,
             "media_type": media_type,
+            "json_mode": json_mode,
         },
         config=config,
     )

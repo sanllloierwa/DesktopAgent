@@ -7,15 +7,20 @@ import binascii
 from typing import Any
 
 from src.utils.config import AppConfig, load_config
-from src.utils.llm_factory import _AnthropicAdapter, create_vision_client
+from src.utils.llm_factory import (
+    _AnthropicAdapter,
+    create_vision_client,
+    resolve_vision_target,
+)
 
 
 def vision_info(config: AppConfig | None = None) -> dict[str, Any]:
     config = config or load_config()
+    provider, model, base_url = resolve_vision_target(config)
     return {
-        "provider": config.vision.provider,
-        "model": config.vision.model,
-        "base_url": config.vision.base_url,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
         "transport": config.vision.transport,
     }
 
@@ -25,6 +30,7 @@ async def analyze_image(
     question: str,
     media_type: str = "image/png",
     config: AppConfig | None = None,
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     """Send one image to the configured vision model and normalize its response."""
     if not image_base64.strip():
@@ -58,6 +64,7 @@ async def analyze_image(
                     {"type": "text", "text": question},
                 ],
             }],
+            json_mode=json_mode,
         )
     else:
         response = await llm.messages.create(
@@ -75,6 +82,7 @@ async def analyze_image(
                     },
                 ],
             }],
+            json_mode=json_mode,
         )
 
     answer = response.content[0].text if hasattr(response, "content") else str(response)

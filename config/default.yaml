@@ -1,5 +1,5 @@
 agent:
-  max_steps: 20
+  max_steps: 50
   step_timeout: 60
   retry_max: 3
   replan_max: 5

@@ -63,6 +63,8 @@ def test_planner_prompt_routes_native_wechat_through_desktop_tools() -> None:
     assert 'desktop_keypress(keys="ctrl+f", app_name="wechat")' in prompt
     assert "不要索要微信账号、手机号或密码" in prompt
     assert "最后截图并分析消息是否出现在聊天记录中" in prompt
+    assert "不支持“若/如果/视情况”条件步骤" in prompt
+    assert "只有用户目标明确要求“登录”时" in prompt
 
 
 def test_planner_prompt_requires_structured_visual_coordinates() -> None:

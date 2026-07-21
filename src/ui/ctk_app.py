@@ -34,10 +34,12 @@ from src.agent.loop import AgentLoop
 from src.ui.events import AgentEvent, EventType, task_done_console_label
 from src.tools.interactive.user_input import UserInputBridge, PromptRequest
 from src.utils.llm_factory import create_llm_client
+from src.utils.config import load_config
 from src.utils.user_settings import (
     UserSettings,
     load_user_settings,
     save_user_settings,
+    save_model_selection,
     get_user_settings,
 )
 
@@ -157,7 +159,17 @@ PROVIDER_INFO = {
     },
     "kimi": {
         "name": "Kimi",
-        "models": ["kimi-k3"],
+        "models": ["kimi-k3", "kimi-k2.6"],
+    },
+}
+
+VISION_PROVIDER_INFO = {
+    "agnes": {"name": "Agnes AI", "models": ["agnes-2.0-flash"]},
+    "kimi": {"name": "Kimi", "models": ["kimi-k3", "kimi-k2.6"]},
+    "openai": {"name": "OpenAI", "models": ["gpt-4o", "gpt-4.1"]},
+    "anthropic": {
+        "name": "Anthropic",
+        "models": ["claude-sonnet-4-6", "claude-opus-4-7"],
     },
 }
 
@@ -252,6 +264,13 @@ class CtkDesktopAgent:
 
     def _build_settings_tab(self) -> None:
         ctk = self.ctk
+        config = load_config()
+        vision_provider = self.user_settings.vision_provider or config.vision.provider
+        vision_model = self.user_settings.vision_model or config.vision.model
+        vision_models = VISION_PROVIDER_INFO.get(
+            vision_provider,
+            {"models": [vision_model]},
+        )["models"]
 
         title = ctk.CTkLabel(self.settings_tab, text="API 配置", font=ctk.CTkFont(size=16, weight="bold"))
         title.pack(anchor="w", padx=15, pady=(15, 5))
@@ -282,8 +301,38 @@ class CtkDesktopAgent:
         self.model_dd = ctk.CTkOptionMenu(
             sel_frame, values=PROVIDER_INFO[self.user_settings.default_provider]["models"],
             variable=self.model_var, width=200,
+            command=self._on_model_changed,
         )
         self.model_dd.pack(side="left")
+
+        vision_sel_frame = ctk.CTkFrame(self.settings_tab, fg_color="transparent")
+        vision_sel_frame.pack(fill="x", padx=15, pady=(0, 10))
+
+        ctk.CTkLabel(
+            vision_sel_frame, text="视觉 Provider", font=ctk.CTkFont(size=12)
+        ).pack(side="left", padx=(0, 8))
+        self.vision_provider_var = ctk.StringVar(value=vision_provider)
+        self.vision_provider_dd = ctk.CTkOptionMenu(
+            vision_sel_frame,
+            values=list(VISION_PROVIDER_INFO.keys()),
+            variable=self.vision_provider_var,
+            width=140,
+            command=self._on_vision_provider_changed,
+        )
+        self.vision_provider_dd.pack(side="left", padx=(0, 15))
+
+        ctk.CTkLabel(
+            vision_sel_frame, text="视觉模型", font=ctk.CTkFont(size=12)
+        ).pack(side="left", padx=(0, 8))
+        self.vision_model_var = ctk.StringVar(value=vision_model)
+        self.vision_model_dd = ctk.CTkOptionMenu(
+            vision_sel_frame,
+            values=vision_models,
+            variable=self.vision_model_var,
+            width=200,
+            command=self._on_vision_model_changed,
+        )
+        self.vision_model_dd.pack(side="left")
 
         # API Keys
         keys_frame = ctk.CTkFrame(self.settings_tab)
@@ -310,7 +359,7 @@ class CtkDesktopAgent:
             self.settings_tab,
             text=(
                 "密钥优先级：UI 保存 > 环境变量 > .env\n"
-                "Kimi Key: platform.kimi.ai  |  DeepSeek Key: platform.deepseek.com/api_keys"
+                "Kimi Key: platform.kimi.com  |  DeepSeek Key: platform.deepseek.com/api_keys"
             ),
             font=ctk.CTkFont(size=11),
             text_color="gray",
@@ -356,12 +405,46 @@ class CtkDesktopAgent:
         models = PROVIDER_INFO.get(choice, {}).get("models", [])
         self.model_dd.configure(values=models)
         self.model_var.set(models[0] if models else "")
+        self.user_settings = save_model_selection(
+            default_provider=choice,
+            default_model=self.model_var.get(),
+        )
+
+    def _on_model_changed(self, choice: str) -> None:
+        self.user_settings = save_model_selection(
+            default_provider=self.provider_var.get(),
+            default_model=choice,
+        )
+
+    def _on_vision_provider_changed(self, choice: str) -> None:
+        models = VISION_PROVIDER_INFO.get(choice, {}).get("models", [])
+        self.vision_model_dd.configure(values=models)
+        self.vision_model_var.set(models[0] if models else "")
+        self.user_settings = save_model_selection(
+            vision_provider=choice,
+            vision_model=self.vision_model_var.get(),
+        )
+
+    def _on_vision_model_changed(self, choice: str) -> None:
+        self.user_settings = save_model_selection(
+            vision_provider=self.vision_provider_var.get(),
+            vision_model=choice,
+        )
 
     def _load_settings_to_form(self) -> None:
         us = self.user_settings
         self.provider_var.set(us.default_provider)
+        models = PROVIDER_INFO.get(us.default_provider, {}).get("models", [])
+        self.model_dd.configure(values=models)
         self.model_var.set(us.default_model)
-        self._on_provider_changed(us.default_provider)
+
+        config = load_config()
+        vision_provider = us.vision_provider or config.vision.provider
+        vision_model = us.vision_model or config.vision.model
+        self.vision_provider_var.set(vision_provider)
+        vision_models = VISION_PROVIDER_INFO.get(vision_provider, {}).get("models", [])
+        self.vision_model_dd.configure(values=vision_models)
+        self.vision_model_var.set(vision_model)
 
         for p in ["deepseek", "openai", "anthropic", "agnes", "kimi"]:
             var = getattr(self, f"key_{p}", None)
@@ -384,11 +467,19 @@ class CtkDesktopAgent:
             kimi_api_key=getattr(self, "key_kimi").get().strip(),
             default_provider=self.provider_var.get(),
             default_model=self.model_var.get(),
+            vision_provider=self.vision_provider_var.get(),
+            vision_model=self.vision_model_var.get(),
         )
         save_user_settings(settings)
         self.user_settings = settings
         self._load_settings_to_form()
-        self.settings_msg.configure(text=f"已保存 — Provider: {settings.default_provider} / Model: {settings.default_model}", text_color="#1e7e34")
+        self.settings_msg.configure(
+            text=(
+                f"已保存 — 主模型: {settings.default_provider}/{settings.default_model}; "
+                f"视觉: {settings.vision_provider}/{settings.vision_model}"
+            ),
+            text_color="#1e7e34",
+        )
 
     # ==================================================================
     # Task Callbacks
@@ -398,6 +489,13 @@ class CtkDesktopAgent:
         goal = self.task_input.get("1.0", "end-1c").strip()
         if not goal:
             return
+
+        self.user_settings = save_model_selection(
+            default_provider=self.provider_var.get(),
+            default_model=self.model_var.get(),
+            vision_provider=self.vision_provider_var.get(),
+            vision_model=self.vision_model_var.get(),
+        )
 
         # 检查 API key
         try:

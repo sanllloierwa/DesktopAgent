@@ -24,6 +24,8 @@ class UserSettings:
     kimi_api_key: str = ""
     default_provider: str = "deepseek"
     default_model: str = "deepseek-chat"
+    vision_provider: str = ""
+    vision_model: str = ""
     last_used_provider: str = ""
 
     _lock: Lock = field(default_factory=Lock, repr=False, compare=False)
@@ -104,12 +106,55 @@ def save_user_settings(settings: UserSettings) -> None:
         "kimi_api_key": settings.kimi_api_key,
         "default_provider": settings.default_provider,
         "default_model": settings.default_model,
+        "vision_provider": settings.vision_provider,
+        "vision_model": settings.vision_model,
         "last_used_provider": settings.last_used_provider,
     }
     with settings._lock:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     _user_settings = settings
+
+
+def save_model_selection(
+    *,
+    default_provider: str | None = None,
+    default_model: str | None = None,
+    vision_provider: str | None = None,
+    vision_model: str | None = None,
+) -> UserSettings:
+    """Persist model dropdown changes without rewriting API keys."""
+    global _user_settings
+    settings = get_user_settings()
+    updates = {
+        key: value
+        for key, value in {
+            "default_provider": default_provider,
+            "default_model": default_model,
+            "vision_provider": vision_provider,
+            "vision_model": vision_model,
+        }.items()
+        if value is not None
+    }
+    for key, value in updates.items():
+        setattr(settings, key, value)
+
+    _ensure_dir()
+    data: dict = {}
+    if SETTINGS_FILE.exists():
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, OSError):
+            pass
+    data.update(updates)
+    with settings._lock:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    _user_settings = settings
+    return settings
 
 
 def get_user_settings() -> UserSettings:

@@ -35,7 +35,7 @@ AI 驱动的跨平台桌面自动化代理——用自然语言描述任务，Ag
 | 功能 | 当前实现 | 测试状态 |
 | --- | --- | --- |
 | **Agnes MCP 视觉分析** | `desktop_screenshot → analyze_screen → src/vision_mcp`，支持 MCP/direct 两种传输 | 尚未进行长时间稳定性和复杂界面测试；已观察到上游请求偶发超时 |
-| **Kimi K3 文本与视觉** | OpenAI 兼容文本生成；视觉侧复用 `image_url` + MCP 链路 | 已完成参数与消息格式单元测试，尚未使用真实 Kimi Key 进行端到端测试 |
+| **Kimi 文本与视觉** | OpenAI 兼容文本生成；视觉侧复用 `image_url` + MCP 链路 | 已完成参数与消息格式单元测试，尚未进行完整桌面端到端测试 |
 | **结构化视觉定位** | `locate_screen_element` 返回目标边界框、物理屏幕坐标和置信度 | 尚未在不同 DPI、窗口缩放、遮挡和动态界面中进行真实点击测试 |
 | **模拟键鼠操作** | `focus_window`、`desktop_keypress`、`desktop_click`、`desktop_move_mouse`、`desktop_scroll`、`desktop_drag` | 尚未进行跨应用端到端测试；当前主要面向 Windows |
 | **多显示器/DPI 坐标** | 截图携带 `left/top/width/height`，启用 Per-Monitor DPI Awareness，并支持负坐标 | 尚未在多显示器排列和不同缩放比例组合下测试 |
@@ -82,28 +82,28 @@ desktop_screenshot
 
 ### LLM 多后端支持
 
-统一适配层（`src/utils/llm_factory.py`），支持 Anthropic、OpenAI、DeepSeek、Kimi K3、Agnes 和 Ollama 本地模型。Kimi K3 会使用其专用参数约束：不显式传入 `temperature`，并使用 `max_completion_tokens`。
+统一适配层（`src/utils/llm_factory.py`），支持 Anthropic、OpenAI、DeepSeek、Kimi、Agnes 和 Ollama 本地模型。Kimi 会使用其专用参数约束：不显式传入 `temperature`，并使用 `max_completion_tokens`。
 
-#### Kimi K3 配置
+#### Kimi 配置
 
-文本生成可直接在 Gradio 或 CustomTkinter 的设置页选择 `kimi / kimi-k3` 并填写 Kimi API Key，也可在 `.env` 中配置：
+Gradio 和 CustomTkinter 的设置页分别提供“默认 Provider/模型”和“视觉 Provider/模型”两组选择器，可选择 `kimi-k3` 或 `kimi-k2.6`。模型下拉框的变化会立即持久化，启动任务前也会再次同步；API Key 仍需点击“保存设置”。要让 Kimi 同时负责规划文本与截图分析，应将两组选择为相同的 Kimi 模型。也可在 `.env` 中配置密钥：
 
 ```dotenv
 KIMI_API_KEY=sk-xxx
 # 同时兼容官方环境变量名：MOONSHOT_API_KEY
 ```
 
-如果希望由 Kimi K3 承担桌面截图分析，需要同时修改 `config/default.yaml` 中完整的视觉配置，不能只改模型名：
+UI 保存的视觉选择优先于 YAML，并写入 `~/.desktop-agent/settings.json`。无 UI 环境仍可使用以下 YAML 配置：
 
 ```yaml
 vision:
   provider: kimi
-  model: kimi-k3
-  base_url: "https://api.moonshot.ai/v1"
+  model: kimi-k2.6
+  base_url: "https://api.moonshot.cn/v1"
   transport: mcp
 ```
 
-当前仍保留 Agnes 为默认视觉模型；Kimi K3 视觉链路尚未使用真实桌面场景和真实 API Key 进行端到端测试。
+首次运行且尚未保存视觉选择时，仍以 Agnes 作为默认视觉模型；Kimi 视觉链路尚未进行完整真实桌面端到端测试。
 
 ### 事件系统
 

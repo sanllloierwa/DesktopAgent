@@ -53,12 +53,27 @@ def _artifact_output(source: Any) -> dict[str, str]:
     return {"mcp_artifact_path": str(path)} if path else {}
 
 
-async def _run_vision(image_base64: str, question: str) -> tuple[dict[str, Any], Any]:
+async def _run_vision(
+    image_base64: str,
+    question: str,
+    *,
+    json_mode: bool = False,
+) -> tuple[dict[str, Any], Any]:
     config = load_config()
     if config.vision.transport == "mcp":
-        result = await mcp_analyze_image(image_base64, question, config=config)
+        if json_mode:
+            result = await mcp_analyze_image(
+                image_base64, question, config=config, json_mode=True
+            )
+        else:
+            result = await mcp_analyze_image(image_base64, question, config=config)
     else:
-        result = await analyze_image(image_base64, question, config=config)
+        if json_mode:
+            result = await analyze_image(
+                image_base64, question, config=config, json_mode=True
+            )
+        else:
+            result = await analyze_image(image_base64, question, config=config)
     return result, config
 
 
@@ -159,7 +174,9 @@ class LocateScreenElementTool(BaseTool):
 - 如果目标不可见、被遮挡、存在多个无法区分的候选，found=false；
 - 不要猜测不可见目标。"""
         try:
-            result, config = await _run_vision(image_base64, question)
+            result, config = await _run_vision(
+                image_base64, question, json_mode=True
+            )
             payload = _parse_json_object(str(result.get("answer", "")))
             if payload.get("found") is not True:
                 return {

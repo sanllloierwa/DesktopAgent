@@ -4,9 +4,10 @@ from src.tools.ai.vision import LocateScreenElementTool
 
 
 async def test_visual_location_maps_image_point_to_physical_screen(monkeypatch) -> None:
-    async def fake_mcp(image_base64, question, config):
+    async def fake_mcp(image_base64, question, config, json_mode=False):
         assert image_base64 == "image-data"
         assert "1920x1080" in question
+        assert json_mode is True
         return {
             "answer": (
                 '```json\n{"found": true, "bbox": [100, 200, 300, 260], '
@@ -35,7 +36,8 @@ async def test_visual_location_maps_image_point_to_physical_screen(monkeypatch) 
 
 
 async def test_visual_location_rejects_low_confidence(monkeypatch) -> None:
-    async def fake_mcp(_image, _question, config):
+    async def fake_mcp(_image, _question, config, json_mode=False):
+        assert json_mode is True
         return {
             "answer": (
                 '{"found": true, "bbox": [10, 10, 50, 50], '
@@ -54,7 +56,8 @@ async def test_visual_location_rejects_low_confidence(monkeypatch) -> None:
 
 
 async def test_visual_location_rejects_out_of_bounds_coordinates(monkeypatch) -> None:
-    async def fake_mcp(_image, _question, config):
+    async def fake_mcp(_image, _question, config, json_mode=False):
+        assert json_mode is True
         return {
             "answer": (
                 '{"found": true, "bbox": [10, 10, 150, 50], '

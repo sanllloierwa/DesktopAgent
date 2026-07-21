@@ -10,7 +10,14 @@ from src.utils.secret import get_api_key
 # Provider 默认 base URL
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+KIMI_BASE_URL = "https://api.moonshot.cn/v1"
+KIMI_GLOBAL_BASE_URL = "https://api.moonshot.ai/v1"
+
+PROVIDER_BASE_URLS = {
+    "deepseek": DEEPSEEK_BASE_URL,
+    "agnes": AGNES_BASE_URL,
+    "kimi": KIMI_BASE_URL,
+}
 
 
 class ContentBlock:
@@ -45,6 +52,7 @@ class _OpenAICompatAdapter:
         temperature: float = 0.3,
         system: str = "",
         messages: list[dict] | None = None,
+        json_mode: bool = False,
     ) -> LLMResponse:
         openai_msgs: list[dict] = []
         if system:
@@ -56,9 +64,19 @@ class _OpenAICompatAdapter:
             "model": model or self.model,
             "messages": openai_msgs,
         }
+        selected_model = model or self.model
         if self.provider == "kimi":
-            # Kimi K3 fixes temperature at 1.0 and rejects other explicit values.
+            # Kimi models manage temperature themselves and reject unsupported
+            # explicit values. K2.6 enables thinking by default; that reasoning
+            # shares the completion budget with the final content. Planner calls
+            # use JSON mode and do not need hidden reasoning, so disable it there.
             request["max_completion_tokens"] = max_tokens
+            if json_mode:
+                request["response_format"] = {"type": "json_object"}
+                if selected_model.startswith(("kimi-k2.6", "kimi-k2.5")):
+                    request["extra_body"] = {
+                        "thinking": {"type": "disabled"},
+                    }
         else:
             request["max_tokens"] = max_tokens
             request["temperature"] = temperature
@@ -86,6 +104,7 @@ class _AnthropicAdapter:
         temperature: float = 0.3,
         system: str = "",
         messages: list[dict] | None = None,
+        json_mode: bool = False,
     ) -> Any:
         return self._client.messages.create(
             model=model or self.model,
@@ -164,17 +183,28 @@ def create_llm_client(config: AppConfig | None = None, provider_override: str | 
     return _create_client(provider, model, base_url)
 
 
+def resolve_vision_target(config: AppConfig | None = None) -> tuple[str, str, str]:
+    """Resolve effective vision settings, with UI values overriding YAML."""
+    if config is None:
+        config = load_config()
+
+    from src.utils.user_settings import get_user_settings
+    us = get_user_settings()
+    provider = us.vision_provider or config.vision.provider
+    model = us.vision_model or config.vision.model
+    if provider == config.vision.provider:
+        base_url = getattr(config.vision, "base_url", "") or ""
+    else:
+        base_url = PROVIDER_BASE_URLS.get(provider, "")
+    return provider, model, base_url
+
+
 def create_vision_client(config: AppConfig | None = None) -> Any:
     """创建视觉分析专用客户端，读取 config.vision 配置
 
     视觉模型与 UI 中选择的主模型相互独立。主模型可以是 DeepSeek，
     截图仍固定交给 vision.provider（默认 Agnes）处理。
     """
-    if config is None:
-        config = load_config()
-
-    provider = config.vision.provider
-    model = config.vision.model
-    base_url = getattr(config.vision, "base_url", "") or ""
+    provider, model, base_url = resolve_vision_target(config)
 
     return _create_client(provider, model, base_url)

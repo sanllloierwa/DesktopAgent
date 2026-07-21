@@ -17,6 +17,7 @@ from uuid import uuid4
 from loguru import logger
 
 from src.utils.config import AppConfig
+from src.utils.llm_factory import resolve_vision_target
 
 
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -105,6 +106,7 @@ def write_mcp_artifact(
         request, image_bytes, image_error = _prepare_request(arguments)
         media_type = str(arguments.get("media_type", "image/png"))
         image_entry = f"screenshot{_image_suffix(media_type)}" if image_bytes else None
+        provider, model, _base_url = resolve_vision_target(config)
         manifest = {
             "format_version": 1,
             "created_at": now.isoformat(),
@@ -113,8 +115,8 @@ def write_mcp_artifact(
             "success": error is None,
             "duration_ms": round(float(duration_ms), 3),
             "transport": config.vision.transport,
-            "provider": config.vision.provider,
-            "model": config.vision.model,
+            "provider": provider,
+            "model": model,
             "request_entry": "request.json",
             "result_entry": "error.json" if error is not None else "response.json",
             "screenshot_entry": image_entry,

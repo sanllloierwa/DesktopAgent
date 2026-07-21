@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from src.utils.config import AppConfig, Settings
 from src.utils.llm_factory import KIMI_BASE_URL, _OpenAICompatAdapter, _create_client
+from src.utils.user_settings import UserSettings
 from src.vision_mcp.agnes_backend import analyze_image
 from src.vision_mcp.agnes_client import mcp_analyze_image
 
@@ -43,6 +44,21 @@ async def test_kimi_adapter_uses_k3_compatible_parameters() -> None:
     assert "temperature" not in request
 
 
+async def test_kimi_k26_json_mode_disables_thinking() -> None:
+    raw_client = _FakeOpenAIClient()
+    adapter = _OpenAICompatAdapter(raw_client, "kimi-k2.6", provider="kimi")
+
+    await adapter.messages.create(
+        max_tokens=2000,
+        messages=[{"role": "user", "content": "输出规划 JSON"}],
+        json_mode=True,
+    )
+
+    request = raw_client.completions.requests[0]
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 def test_kimi_factory_uses_official_endpoint(monkeypatch) -> None:
     calls = []
 
@@ -75,6 +91,10 @@ async def test_kimi_multimodal_request_uses_image_url(monkeypatch) -> None:
         "src.vision_mcp.agnes_backend.create_vision_client",
         lambda _config: adapter,
     )
+    monkeypatch.setattr(
+        "src.utils.user_settings.get_user_settings",
+        lambda: UserSettings(vision_provider="kimi", vision_model="kimi-k3"),
+    )
     image_base64 = base64.b64encode(b"image-bytes").decode("ascii")
 
     result = await analyze_image(image_base64, "描述截图", config=config)
@@ -87,6 +107,35 @@ async def test_kimi_multimodal_request_uses_image_url(monkeypatch) -> None:
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+async def test_kimi_structured_vision_uses_json_mode(monkeypatch) -> None:
+    raw_client = _FakeOpenAIClient()
+    adapter = _OpenAICompatAdapter(raw_client, "kimi-k2.6", provider="kimi")
+    config = AppConfig.model_validate({
+        "vision": {
+            "provider": "kimi",
+            "model": "kimi-k2.6",
+            "base_url": KIMI_BASE_URL,
+            "transport": "direct",
+        },
+    })
+    monkeypatch.setattr(
+        "src.vision_mcp.agnes_backend.create_vision_client",
+        lambda _config: adapter,
+    )
+    image_base64 = base64.b64encode(b"image-bytes").decode("ascii")
+
+    await analyze_image(
+        image_base64,
+        "只返回 JSON 对象",
+        config=config,
+        json_mode=True,
+    )
+
+    request = raw_client.completions.requests[0]
+    assert request["response_format"] == {"type": "json_object"}
+    assert request["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 async def test_mcp_client_uses_generic_multimodal_tool(monkeypatch) -> None:
     calls = []
 
@@ -96,18 +145,27 @@ async def test_mcp_client_uses_generic_multimodal_tool(monkeypatch) -> None:
 
     monkeypatch.setattr("src.vision_mcp.agnes_client.call_agnes_tool", fake_call)
 
-    await mcp_analyze_image("aW1hZ2U=", "描述")
+    await mcp_analyze_image("aW1hZ2U=", "描述", json_mode=True)
 
     assert calls[0][0] == "analyze_image"
     assert calls[0][1]["media_type"] == "image/png"
+    assert calls[0][1]["json_mode"] is True
 
 
 def test_kimi_settings_and_ui_options_are_registered() -> None:
-    from src.ui.ctk_app import PROVIDER_INFO as CTK_PROVIDERS
-    from src.ui.gradio_app import PROVIDER_INFO as GRADIO_PROVIDERS
+    from src.ui.ctk_app import (
+        PROVIDER_INFO as CTK_PROVIDERS,
+        VISION_PROVIDER_INFO as CTK_VISION_PROVIDERS,
+    )
+    from src.ui.gradio_app import (
+        PROVIDER_INFO as GRADIO_PROVIDERS,
+        VISION_PROVIDER_INFO as GRADIO_VISION_PROVIDERS,
+    )
 
     settings = Settings(kimi_api_key="kimi", moonshot_api_key="moonshot")
     assert settings.kimi_api_key == "kimi"
     assert settings.moonshot_api_key == "moonshot"
-    assert CTK_PROVIDERS["kimi"]["models"] == ["kimi-k3"]
+    assert CTK_PROVIDERS["kimi"]["models"] == ["kimi-k3", "kimi-k2.6"]
     assert GRADIO_PROVIDERS["kimi"]["base_url"] == KIMI_BASE_URL
+    assert CTK_VISION_PROVIDERS["kimi"]["models"] == ["kimi-k3", "kimi-k2.6"]
+    assert GRADIO_VISION_PROVIDERS["kimi"]["base_url"] == KIMI_BASE_URL

@@ -11,6 +11,39 @@ from src.schemas.task import Task, Step, RetryPolicy
 from src.tools.base import ToolRegistry
 
 
+def _parse_json_object(text: str) -> dict[str, Any]:
+    """Extract the first JSON object from an LLM response.
+
+    JSON mode should normally return a bare object, but this also tolerates
+    Markdown fences and a short explanatory prefix from other providers.
+    """
+    cleaned = (text or "").lstrip("\ufeff\r\n\t ")
+    if not cleaned:
+        raise ValueError(
+            "规划模型返回了空内容；请检查模型输出额度，或关闭 Kimi 思考模式后重试。"
+        )
+
+    if cleaned.startswith("```"):
+        first_newline = cleaned.find("\n")
+        if first_newline >= 0:
+            cleaned = cleaned[first_newline + 1:]
+
+    start = cleaned.find("{")
+    if start < 0:
+        preview = cleaned[:120].replace("\n", " ")
+        raise ValueError(f"规划模型未返回 JSON 对象：{preview}")
+
+    try:
+        value, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"规划模型返回的 JSON 不完整或格式错误（第 {exc.lineno} 行第 {exc.colno} 列）：{exc.msg}"
+        ) from exc
+    if not isinstance(value, dict):
+        raise ValueError("规划模型返回的 JSON 顶层必须是对象")
+    return value
+
+
 class Planner:
     """任务规划器：使用 LLM 将用户的高层目标分解为有序工具调用序列。"""
 
@@ -33,6 +66,10 @@ class Planner:
 6. 每个步骤都是达成目标所必需的，不要把备选方案作为独立步骤
 7. 禁止生成"如果 X 失败则尝试 Y"或"尝试 A→若不行用 B"这类回退步骤
 8. 系统有自动重试和重新规划机制，失败时会自行生成替代方案，不需要你预先准备
+8a. 执行计划是线性的，不支持“若/如果/视情况”条件步骤；每一步都必须可以直接执行。
+    只有用户目标明确要求“登录”时，才可预先加入登录人工确认。
+    用户只要求操作已安装客户端时，不要额外规划“若未登录则请求用户登录”；
+    未登录应由后续实际操作失败触发重新规划。
 9. 如果只需一步就能完成任务（如"打开浏览器"），只规划一个步骤
 9a. 当用户目标是 Word/WPS/docx 文档时，generate_article 必须使用 {"output_format": "plain_text"}；
     写入 Word/WPS 时使用 write_document_text，content_format 使用 "auto" 或 "plain_text"，
@@ -270,14 +307,10 @@ JSON 格式：
             temperature=0.2,
             system=self.SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
+            json_mode=True,
         )
         text = resp.content[0].text
-        # 处理可能的 markdown code block 包裹
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text)
+        return _parse_json_object(text)
 
     def _goal_violation(self, task: Task, steps: list[Step]) -> str:
         goal = task.goal.lower()

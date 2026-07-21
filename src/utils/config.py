@@ -14,7 +14,9 @@ from pydantic_settings import BaseSettings
 # --- Pydantic models mirroring config/default.yaml ---
 
 class AgentConfig(BaseModel):
-    max_steps: int = 20
+    # Desktop vision workflows often need several screenshot/analyze/act/verify
+    # chains. Twenty successful actions cannot cover a full recovery flow.
+    max_steps: int = 50
     step_timeout: int = 60
     retry_max: int = 3
     replan_max: int = 5

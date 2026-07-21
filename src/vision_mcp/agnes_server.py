@@ -28,9 +28,12 @@ async def analyze_image(
     image_base64: str,
     question: str = "描述画面内容并列出可交互的 UI 元素",
     media_type: str = "image/png",
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     """Analyze a base64 image with the configured vision provider."""
-    return await run_vision_analysis(image_base64, question, media_type)
+    return await run_vision_analysis(
+        image_base64, question, media_type, json_mode=json_mode
+    )
 
 
 @mcp.tool()
@@ -38,9 +41,12 @@ async def analyze_image_with_agnes(
     image_base64: str,
     question: str = "描述画面内容并列出可交互的 UI 元素",
     media_type: str = "image/png",
+    json_mode: bool = False,
 ) -> dict[str, Any]:
     """Backward-compatible alias for older clients."""
-    return await run_vision_analysis(image_base64, question, media_type)
+    return await run_vision_analysis(
+        image_base64, question, media_type, json_mode=json_mode
+    )
 
 
 def main() -> None:
