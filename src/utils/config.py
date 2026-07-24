@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from functools import lru_cache
 
@@ -45,9 +44,10 @@ class VisionConfig(BaseModel):
 
 
 class ImageGenConfig(BaseModel):
-    provider: str = "openai"
-    model: str = "dall-e-3"
+    provider: str = "kimi"
+    model: str = "kimi-k2.5"
     default_size: str = "1024x1024"
+    output_dir: str = "./generated_images"
 
 
 class BrowserConfig(BaseModel):

@@ -13,6 +13,7 @@ class AgentState:
     # 浏览器相关
     browser_launched: bool = False
     browser_page: Any = None
+    last_browser_url: str = ""
     logged_in: dict[str, bool] = field(default_factory=dict)  # 各平台登录状态
 
     # 桌面相关

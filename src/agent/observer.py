@@ -50,6 +50,8 @@ class Observer:
             ctx.uia_summary = self.state.last_uia_summary
         if self.state.last_screenshot_base64:
             ctx.screenshot_base64 = self.state.last_screenshot_base64
+        if self.state.last_browser_url:
+            ctx.extra["browser_url"] = self.state.last_browser_url
 
         return ctx
 

@@ -8,7 +8,7 @@ from src.agent.executor import Executor
 from src.agent.loop import AgentLoop
 from src.agent.state import AgentState
 from src.agent.step_guard import GuardResult
-from src.schemas.task import RetryPolicy, Step, Task
+from src.schemas.task import ActionResult, RetryPolicy, Step, Task
 from src.tools.base import BaseTool, ToolRegistry, ToolSchema
 from src.ui.events import EventBus, EventType
 
@@ -29,6 +29,44 @@ class CountingTool(BaseTool):
         return {"success": False, "error": self.error}
 
 
+def test_publish_article_never_uses_generic_retry_loop() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.config = SimpleNamespace(
+        agent=SimpleNamespace(retry_max=3),
+    )
+    step = Step(
+        tool_name="publish_article",
+        retry_policy=RetryPolicy.ADAPTIVE,
+    )
+
+    assert loop._retry_limit(step) == 0
+
+
+def test_parameter_references_support_generated_image_list_indexes() -> None:
+    loop = object.__new__(AgentLoop)
+    generated = Step(tool_name="generate_image")
+    loop.memory = SimpleNamespace(
+        working=SimpleNamespace(
+            completed_steps=[(
+                generated,
+                ActionResult(
+                    step_id=generated.id,
+                    success=True,
+                    data={"image_paths": ["C:\\images\\one.png", "C:\\images\\two.png"]},
+                ),
+            )],
+            last_result=None,
+        ),
+    )
+
+    assert loop._resolve_param_refs(
+        "{{generate_image.image_paths[0]}}"
+    ) == "C:\\images\\one.png"
+    assert loop._resolve_param_refs(
+        "{{generate_image.image_paths.[1]}}"
+    ) == "C:\\images\\two.png"
+
+
 class ContinueGuard:
     async def before_step(self, _task, _step):
         return GuardResult()
@@ -40,6 +78,14 @@ class ResultVerifier:
 
     async def check_task_completion(self, _task, completed):
         return any(result.success for _step, result in completed), "done"
+
+
+class RejectingVerifier:
+    async def check(self, _step, _result):
+        return False, "UI state did not change"
+
+    async def check_task_completion(self, _task, _completed):
+        return True, "done"
 
 
 class TestMemory:
@@ -121,6 +167,32 @@ async def test_retrying_policy_uses_configured_retry_limit() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_success_does_not_override_repeated_verifier_rejection() -> None:
+    tool = CountingTool("ui_action", [True])
+    registry = ToolRegistry()
+    registry.register(tool)
+
+    class Planner:
+        async def plan(self, _task, _context):
+            return [Step(
+                tool_name="ui_action",
+                retry_policy=RetryPolicy.LINEAR,
+            )], ""
+
+        async def replan(self, _task, _step, _reason, _context, _remaining):
+            return [], "UI action could not be verified", False
+
+    loop = make_loop(registry, Planner(), retry_max=1)
+    loop.verifier = RejectingVerifier()
+
+    result = await loop.run(Task(goal="perform verified UI action"))
+
+    assert result.success is False
+    assert tool.calls == 2
+    assert "could not be verified" in result.summary
+
+
+@pytest.mark.asyncio
 async def test_repeated_vision_timeouts_open_circuit_and_stop_retrying() -> None:
     vision = CountingTool(
         "analyze_screen", [False], error="[VISION_TIMEOUT] Request timed out."
@@ -170,6 +242,34 @@ def test_duplicate_wechat_login_confirmations_are_removed() -> None:
     assert len(deduped) == 2
     assert deduped[0] is steps[0]
     assert deduped[1] is steps[2]
+
+
+@pytest.mark.asyncio
+async def test_wechat_manual_login_uses_desktop_verification_not_browser() -> None:
+    class RejectBrowserCheck:
+        async def run(self, _step):
+            raise AssertionError("browser login checker must not run for WeChat")
+
+    loop = object.__new__(AgentLoop)
+    loop.executor = RejectBrowserCheck()
+    step = Step(
+        tool_name="request_user_input",
+        params={"prompt": "请完成微信扫码登录后回复已登录"},
+        description="[WECHAT_LOGIN_REQUIRED] 等待用户完成微信扫码登录",
+    )
+    confirmation = ActionResult(
+        step_id=step.id,
+        success=True,
+        data={"confirmation": "yes"},
+    )
+
+    checked = await loop._verify_manual_login_confirmation(
+        Task(goal="微信搜索火眼审阅服务号"),
+        step,
+        confirmation,
+    )
+
+    assert checked is None
 
 
 def test_adjacent_duplicate_wechat_shortcuts_are_removed() -> None:

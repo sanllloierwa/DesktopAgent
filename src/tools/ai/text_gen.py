@@ -8,10 +8,32 @@ from src.tools.base import BaseTool, ToolSchema
 from src.utils.llm_factory import create_llm_client
 
 
+def _split_article_parts(article: str, fallback_title: str) -> tuple[str, str]:
+    """Split the generated first-line title from its body for WPS range styling."""
+    lines = article.strip().splitlines()
+    first_index = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first_index is None:
+        return fallback_title.strip() or "未命名文章", ""
+
+    raw_title = lines[first_index].strip()
+    title = raw_title.lstrip("#").strip()
+    title = title.removeprefix("标题：").removeprefix("标题:").strip()
+    body = "\n".join(lines[first_index + 1:]).strip()
+
+    # If the model did not produce a standalone title, retain the whole output
+    # as body instead of accidentally styling a long opening paragraph as title.
+    if not title or len(title) > 100 or not body:
+        return fallback_title.strip() or title or "未命名文章", article.strip()
+    return title, body
+
+
 class GenerateArticleTool(BaseTool):
     schema = ToolSchema(
         name="generate_article",
-        description="使用 LLM 生成一篇结构化文章。支持指定主题、风格和字数。",
+        description=(
+            "使用 LLM 生成一篇结构化文章。支持指定主题、风格和字数；"
+            "结果同时返回 article、title 和 body，便于 WPS 分别写入标题与正文。"
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -85,6 +107,7 @@ class GenerateArticleTool(BaseTool):
             output_format = "plain_text"
             format_instruction = (
                 "- 使用适合粘贴到 Word/WPS 的纯文本格式\n"
+                "- 第一行只写文章标题，从第二行开始写正文\n"
                 "- 标题单独成行，段落之间空一行\n"
                 "- 列表使用中文编号或普通项目符号，不要使用 Markdown 标记\n"
                 "- 不要输出 #、**、```、| 表格、HTML 标签等标记"
@@ -110,10 +133,13 @@ class GenerateArticleTool(BaseTool):
                 messages=[{"role": "user", "content": prompt}],
             )
             article = resp.content[0].text if hasattr(resp, "content") else str(resp)
+            title, body = _split_article_parts(article, topic)
             return {
                 "success": True,
                 "summary": f"Generated article about '{topic}' ({len(article)} chars)",
                 "article": article,
+                "title": title,
+                "body": body,
                 "format": output_format,
                 "topic": topic,
             }

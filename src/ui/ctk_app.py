@@ -25,13 +25,12 @@ import asyncio
 import queue
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from src.schemas.task import Task
 from src.tools.base import ToolRegistry
 from src.agent.loop import AgentLoop
-from src.ui.events import AgentEvent, EventType, task_done_console_label
+from src.ui.events import AgentEvent, task_done_console_label
 from src.tools.interactive.user_input import UserInputBridge, PromptRequest
 from src.utils.llm_factory import create_llm_client
 from src.utils.config import load_config
@@ -55,10 +54,21 @@ class AgentThread(threading.Thread):
         self._event_queue: queue.Queue[dict] = queue.Queue()
         self._stop_flag = threading.Event()
         self._ready = threading.Event()
+        self._task_active = threading.Event()
+        self._submit_lock = threading.Lock()
         self._last_error: str = ""
 
-    def submit_task(self, goal: str) -> None:
-        self._task_queue.put(goal)
+    def submit_task(self, goal: str) -> bool:
+        with self._submit_lock:
+            if self._task_active.is_set() or not self._task_queue.empty():
+                return False
+            self._task_active.set()
+            self._task_queue.put(goal)
+            return True
+
+    @property
+    def busy(self) -> bool:
+        return self._task_active.is_set() or not self._task_queue.empty()
 
     def stop_task(self) -> None:
         self._stop_flag.set()
@@ -125,6 +135,7 @@ class AgentThread(threading.Thread):
                         "timestamp": time.time(),
                     })
                 finally:
+                    self._task_active.clear()
                     agent.events.unsubscribe(handler)
                     agent.reset()
 
@@ -489,6 +500,12 @@ class CtkDesktopAgent:
         goal = self.task_input.get("1.0", "end-1c").strip()
         if not goal:
             return
+        if self.agent_thread and self.agent_thread.busy:
+            self._set_status("已有任务正在运行，请勿重复提交", "#c5221f")
+            return
+        if self.agent_thread and self.agent_thread.is_alive():
+            self.agent_thread.stop_task()
+            self.agent_thread = None
 
         self.user_settings = save_model_selection(
             default_provider=self.provider_var.get(),
@@ -517,7 +534,10 @@ class CtkDesktopAgent:
         self.agent_thread = AgentThread(self.registry)
         self.agent_thread.start()
         self.agent_thread._ready.wait(timeout=30)
-        self.agent_thread.submit_task(goal)
+        if not self.agent_thread.submit_task(goal):
+            self._set_status("任务已经在运行或排队", "#c5221f")
+            self.run_btn.configure(state="normal")
+            return
 
         self._start_polling()
 

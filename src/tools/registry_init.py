@@ -23,6 +23,8 @@ from src.tools.desktop.wps_com import (
     WriteTextTool,
     SetFontTool,
     SetAlignmentTool,
+    FormatDocumentRangeTool,
+    ApplyListFormatTool,
     SaveDocumentTool,
     ExportPDFTool,
     InsertImageTool,
@@ -32,16 +34,27 @@ from src.tools.desktop.wps_com import (
 from src.tools.browser.navigate import (
     NavigateTool,
     ClickTool,
+    DismissModalTool,
     TypeTextTool as BrowserTypeTextTool,
     ScreenshotTool,
     GetDOMTool,
     ExtractTextTool,
     CheckLoginStatusTool,
+    UploadImageTool,
+    GetPageStateTool,
+    SubmitCommentTool,
+    PublishArticleTool,
 )
 
 # AI tools
 from src.tools.ai.text_gen import GenerateArticleTool, SummarizeTool
-from src.tools.ai.vision import AnalyzeScreenTool, LocateScreenElementTool
+from src.tools.ai.image_gen import GenerateImageTool
+from src.tools.ai.vision import (
+    AnalyzeScreenTool,
+    CheckWeChatLoginStatusTool,
+    LocateScreenElementTool,
+    OpenWeChatSearchCandidateTool,
+)
 
 # Interactive tools
 from src.tools.interactive.user_input import RequestUserInputTool
@@ -73,6 +86,8 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     registry.register(WriteTextTool())
     registry.register(SetFontTool())
     registry.register(SetAlignmentTool())
+    registry.register(FormatDocumentRangeTool())
+    registry.register(ApplyListFormatTool())
     registry.register(SaveDocumentTool())
     registry.register(ExportPDFTool())
     registry.register(InsertImageTool())
@@ -80,17 +95,25 @@ def register_all_tools(registry: ToolRegistry) -> ToolRegistry:
     # --- Browser ---
     registry.register(NavigateTool())
     registry.register(ClickTool())
+    registry.register(DismissModalTool())
     registry.register(BrowserTypeTextTool())
     registry.register(ScreenshotTool())
     registry.register(GetDOMTool())
     registry.register(ExtractTextTool())
     registry.register(CheckLoginStatusTool())
+    registry.register(UploadImageTool())
+    registry.register(SubmitCommentTool())
+    registry.register(PublishArticleTool())
+    registry.register(GetPageStateTool())
 
     # --- AI ---
     registry.register(GenerateArticleTool())
+    registry.register(GenerateImageTool())
     registry.register(SummarizeTool())
     registry.register(AnalyzeScreenTool())
+    registry.register(CheckWeChatLoginStatusTool())
     registry.register(LocateScreenElementTool())
+    registry.register(OpenWeChatSearchCandidateTool())
 
     # --- Interactive ---
     registry.register(RequestUserInputTool())

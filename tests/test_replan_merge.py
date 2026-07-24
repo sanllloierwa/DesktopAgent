@@ -78,6 +78,13 @@ def test_planner_prompt_requires_structured_visual_coordinates() -> None:
     assert '微信统一使用 app_name="wechat"' in prompt
 
 
+def test_planner_treats_unrequested_zhihu_topic_as_optional() -> None:
+    prompt = Planner.SYSTEM_PROMPT
+
+    assert "添加话题”是可选操作" in prompt
+    assert "直接继续搜索、评论、赞同、收藏、喜欢" in prompt
+
+
 def test_replan_prompt_stops_using_vision_after_circuit_breaker() -> None:
     source = Planner.replan.__code__.co_consts
     prompt_text = "\n".join(value for value in source if isinstance(value, str))

@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from urllib.request import urlopen
 
 from loguru import logger
 
@@ -43,6 +43,14 @@ def _is_chromium_browser(app_name: str) -> bool:
     """检测应用名称是否对应一个 Chromium 内核浏览器"""
     name = os.path.basename(app_name).lower().replace(".exe", "")
     return name in _CHROMIUM_BROWSERS
+
+
+def _cdp_browser_available() -> bool:
+    try:
+        with urlopen("http://127.0.0.1:9222/json/version", timeout=0.4) as response:
+            return response.status == 200
+    except Exception:
+        return False
 
 
 def find_executable(app_name: str) -> str | None:
@@ -242,6 +250,24 @@ class LaunchAppTool(BaseTool):
         return None
 
     async def execute(self, app_name: str, wait_time: float = 3.0) -> dict:
+        if app_name.strip().lower() in {"wechat", "weixin", "微信"}:
+            try:
+                from src.tools.desktop.native_control import activate_window
+
+                hwnd, title = activate_window("wechat")
+                logger.info("检测到已有微信窗口，聚焦并跳过重复启动")
+                return {
+                    "success": True,
+                    "app_name": "wechat",
+                    "already_running": True,
+                    "window_handle": hwnd,
+                    "window_title": title,
+                    "summary": f"Reusing existing WeChat window: {title}",
+                }
+            except (ImportError, RuntimeError):
+                # No usable WeChat window exists yet; continue with normal launch.
+                pass
+
         path = self._lookup_app(app_name) or find_executable(app_name)
         if not path:
             for alias in _APP_ALIASES.get(app_name.strip().lower(), ()):
@@ -260,6 +286,15 @@ class LaunchAppTool(BaseTool):
             args = [path]
             # Chromium 内核浏览器：开启 CDP 调试端口供 Playwright 连接
             if _is_chromium_browser(path):
+                if _cdp_browser_available():
+                    logger.info("检测到已有 CDP 浏览器实例，跳过重复启动")
+                    return {
+                        "success": True,
+                        "app_name": app_name,
+                        "path": path,
+                        "already_running": True,
+                        "summary": f"Reusing existing browser for {app_name}",
+                    }
                 args.append("--remote-debugging-port=9222")
                 # 使用独立 user-data-dir 强制启动新实例，避免复用已运行的无 CDP 进程
                 from src.utils.config import load_config

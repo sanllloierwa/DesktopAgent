@@ -4,6 +4,7 @@ __pycache__/
 .env
 browser_data/
 screenshots/
+generated_images/
 agent_memory_db/
 *.egg-info/
 dist/
@@ -13,3 +14,5 @@ build/
 .mypy_cache/
 *.md
 !README.md
+deliverables/
+scripts/

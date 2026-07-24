@@ -22,21 +22,62 @@ async def capture_screenshot(region: tuple[int, int, int, int] | None = None) ->
     """
     try:
         from PIL import Image
-        import mss
-
         enable_per_monitor_dpi_awareness()
-        with mss.mss() as sct:
+        monitor: dict[str, int] | None = None
+        img = None
+        mss_error: Exception | None = None
+        try:
+            import mss
+
+            for _ in range(2):
+                try:
+                    with mss.mss() as sct:
+                        if region:
+                            monitor = {
+                                "left": region[0],
+                                "top": region[1],
+                                "width": region[2] - region[0],
+                                "height": region[3] - region[1],
+                            }
+                        else:
+                            # monitors[0] is the complete virtual desktop,
+                            # including secondary monitors and negative origins.
+                            monitor = dict(sct.monitors[0])
+                        img_data = sct.grab(monitor)
+                        img = Image.frombytes(
+                            "RGB", img_data.size, img_data.bgra, "raw", "BGRX"
+                        )
+                    break
+                except Exception as exc:
+                    mss_error = exc
+        except ImportError as exc:
+            mss_error = exc
+
+        if img is None:
+            from PIL import ImageGrab
+
+            bbox = region if region else None
+            img = ImageGrab.grab(bbox=bbox, all_screens=True)
             if region:
                 monitor = {
-                    "left": region[0], "top": region[1],
-                    "width": region[2] - region[0], "height": region[3] - region[1],
+                    "left": region[0],
+                    "top": region[1],
+                    "width": region[2] - region[0],
+                    "height": region[3] - region[1],
                 }
-                img_data = sct.grab(monitor)
             else:
-                monitor = dict(sct.monitors[1])  # primary monitor
-                img_data = sct.grab(monitor)
+                monitor = {
+                    "left": 0,
+                    "top": 0,
+                    "width": img.size[0],
+                    "height": img.size[1],
+                }
+            if mss_error:
+                logger.warning(f"MSS screenshot failed; ImageGrab fallback used: {mss_error}")
 
-            img = Image.frombytes("RGB", img_data.size, img_data.bgra, "raw", "BGRX")
+        assert monitor is not None
+        assert img is not None
+        try:
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             b64 = base64.b64encode(buf.getvalue()).decode()
@@ -53,6 +94,8 @@ async def capture_screenshot(region: tuple[int, int, int, int] | None = None) ->
                 "right": int(monitor["left"] + monitor["width"]),
                 "bottom": int(monitor["top"] + monitor["height"]),
             }
+        finally:
+            img.close()
     except ImportError as e:
         logger.warning(f"Screenshot deps missing: {e}")
         return {"success": False, "error": f"[ENV_ERR] Missing dependency: {e}"}

@@ -31,8 +31,8 @@ from typing import Any, Generator
 from src.schemas.task import Task
 from src.tools.base import ToolRegistry
 from src.agent.loop import AgentLoop
-from src.ui.events import AgentEvent, EventBus, EventType, task_done_console_label
-from src.utils.llm_factory import create_llm_client, DEEPSEEK_BASE_URL
+from src.ui.events import AgentEvent, task_done_console_label
+from src.utils.llm_factory import create_llm_client
 from src.utils.config import load_config
 from src.utils.user_settings import (
     UserSettings,
@@ -142,10 +142,21 @@ class UIBridge(threading.Thread):
         self._event_queue: queue.Queue[dict] = queue.Queue()
         self._stop_flag = threading.Event()
         self._ready = threading.Event()
+        self._task_active = threading.Event()
+        self._submit_lock = threading.Lock()
         self._last_error: str = ""
 
-    def submit_task(self, goal: str) -> None:
-        self._task_queue.put(goal)
+    def submit_task(self, goal: str) -> bool:
+        with self._submit_lock:
+            if self._task_active.is_set() or not self._task_queue.empty():
+                return False
+            self._task_active.set()
+            self._task_queue.put(goal)
+            return True
+
+    @property
+    def busy(self) -> bool:
+        return self._task_active.is_set() or not self._task_queue.empty()
 
     def stop_task(self) -> None:
         self._stop_flag.set()
@@ -213,6 +224,7 @@ class UIBridge(threading.Thread):
                         "timestamp": time.time(),
                     })
                 finally:
+                    self._task_active.clear()
                     self._agent.events.unsubscribe(handler)
                     self._agent.reset()
 
@@ -563,6 +575,18 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                 yield gr.HTML(), gr.Image(), gr.Textbox(), gr.HTML()
                 return
 
+            if bridge and bridge.busy:
+                yield (
+                    _build_html(all_events),
+                    None,
+                    "已有任务正在运行，本次重复提交已忽略。\n",
+                    gr.HTML("<div class='footer' style='color:#c5221f;'>任务运行中，请勿重复提交</div>"),
+                )
+                return
+            if bridge and bridge.is_alive():
+                bridge.stop_task()
+                bridge = None
+
             # 检查是否有可用的 API key
             try:
                 us = get_user_settings()
@@ -583,7 +607,14 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
             bridge = UIBridge(registry)
             bridge.start()
             bridge._ready.wait(timeout=30)
-            bridge.submit_task(goal.strip())
+            if not bridge.submit_task(goal.strip()):
+                yield (
+                    _build_html(all_events),
+                    None,
+                    "已有任务正在排队，本次重复提交已忽略。\n",
+                    gr.HTML("<div class='footer' style='color:#c5221f;'>重复任务已忽略</div>"),
+                )
+                return
 
             yield (
                 _build_html([]),
@@ -637,6 +668,9 @@ def create_ui(registry: ToolRegistry | None = None) -> Any:
                     console_text,
                     gr.HTML(status),
                 )
+                if done_events:
+                    bridge.stop_task()
+                    break
                 time.sleep(0.5)
 
             new_events = bridge.drain_events()

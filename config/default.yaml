@@ -25,9 +25,10 @@ vision:
   artifact_retention: 50         # 最多保留最近的 ZIP 调试包
 
 image_gen:
-  provider: openai
-  model: dall-e-3
+  provider: kimi
+  model: kimi-k2.5
   default_size: "1024x1024"
+  output_dir: "./generated_images"
 
 browser:
   engine: playwright

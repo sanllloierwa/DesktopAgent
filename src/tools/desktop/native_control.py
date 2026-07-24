@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import time
 from typing import Any
 
@@ -11,11 +12,20 @@ from src.utils.windows_dpi import enable_per_monitor_dpi_awareness
 
 
 _WINDOW_ALIASES = {
-    "wechat": ("微信", "wechat"),
-    "weixin": ("微信", "wechat"),
-    "微信": ("微信", "wechat"),
+    "wechat": ("微信", "wechat", "weixin"),
+    "weixin": ("微信", "wechat", "weixin"),
+    "微信": ("微信", "wechat", "weixin"),
     "word": ("word", "文档"),
     "wps": ("wps", "文字"),
+}
+
+_WECHAT_PROCESS_NAMES = {
+    "wechat.exe",
+    "weixin.exe",
+    "wechatapp.exe",
+    "wechatappex.exe",
+    "weixinapp.exe",
+    "weixinappex.exe",
 }
 
 _VK_CODES = {
@@ -110,24 +120,101 @@ def _window_tokens(app_name: str) -> tuple[str, ...]:
     return _WINDOW_ALIASES.get(normalized, (normalized,))
 
 
+def _window_process_name(hwnd: int) -> str:
+    """Resolve a top-level window's executable using its owning PID."""
+    try:
+        import win32process
+
+        _thread_id, process_id = win32process.GetWindowThreadProcessId(hwnd)
+        if not process_id:
+            return ""
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        ]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_ulong,
+            ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_ulong),
+        ]
+        kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.restype = ctypes.c_int
+        handle = kernel32.OpenProcess(
+            0x1000,  # PROCESS_QUERY_LIMITED_INFORMATION
+            False,
+            int(process_id),
+        )
+        if not handle:
+            return ""
+        try:
+            size = ctypes.c_ulong(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(
+                handle,
+                0,
+                buffer,
+                ctypes.byref(size),
+            ):
+                return ""
+            return os.path.basename(buffer.value).strip().lower()
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return ""
+
+
+def _window_process_matches(app_name: str, hwnd: int) -> bool:
+    normalized = app_name.strip().lower()
+    if normalized not in {"wechat", "weixin", "微信"}:
+        return True
+    return _window_process_name(hwnd) in _WECHAT_PROCESS_NAMES
+
+
 def _find_window(app_name: str) -> tuple[int, str] | None:
     import win32gui
 
+    normalized = app_name.strip().lower()
+    is_wechat = normalized in {"wechat", "weixin", "微信"}
     tokens = _window_tokens(app_name)
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, int, bool]] = []
 
     def collect(hwnd: int, _extra: Any) -> None:
         if not win32gui.IsWindowVisible(hwnd):
             return
         title = win32gui.GetWindowText(hwnd).strip()
         lowered = title.lower()
-        if title and any(token in lowered for token in tokens):
-            matches.append((hwnd, title))
+        if is_wechat:
+            # New Weixin builds can expose a visible top-level window with an
+            # empty/nonstandard title. Process ownership is authoritative and
+            # also prevents "WeChat Files" Explorer windows from matching.
+            if not _window_process_matches(app_name, hwnd):
+                return
+            title = title or "Weixin"
+        elif not title or not any(token in lowered for token in tokens):
+            return
+        if title:
+            left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+            area = max(0, right - left) * max(0, bottom - top)
+            owner = bool(win32gui.GetWindow(hwnd, 4))  # GW_OWNER
+            matches.append((hwnd, title, area, owner))
 
     win32gui.EnumWindows(collect, None)
     if not matches:
         return None
-    return min(matches, key=lambda item: len(item[1]))
+    hwnd, title, _area, _owner = max(
+        matches,
+        key=lambda item: (
+            not item[3],
+            item[2],
+            -len(item[1]),
+        ),
+    )
+    return hwnd, title
 
 
 def _root_window(hwnd: int) -> int:
@@ -326,6 +413,10 @@ class DesktopClickTool(BaseTool):
                     "type": "number",
                     "description": "视觉定位置信度；来自 locate_screen_element.confidence",
                 },
+                "app_name": {
+                    "type": "string",
+                    "description": "可选；点击前必须重新聚焦并验证的目标应用，如 wechat",
+                },
                 "min_confidence": {
                     "type": "number",
                     "description": "最低置信度，默认 0.70",
@@ -347,6 +438,7 @@ class DesktopClickTool(BaseTool):
         clicks: int = 1,
         confidence: float = 1.0,
         min_confidence: float = 0.70,
+        app_name: str = "",
         wait_after: float = 0.3,
     ) -> dict:
         try:
@@ -359,6 +451,10 @@ class DesktopClickTool(BaseTool):
                     "success": False,
                     "error": f"Click confidence {confidence:.2f} is below {threshold:.2f}",
                 }
+            hwnd: int | None = None
+            title = ""
+            if app_name:
+                hwnd, title = activate_window(app_name)
             count = max(1, min(int(clicks), 2))
             _move_cursor(int(x), int(y))
             for _ in range(count):
@@ -374,6 +470,10 @@ class DesktopClickTool(BaseTool):
                 "button": button,
                 "clicks": count,
                 "confidence": confidence,
+                "target_app": app_name or None,
+                "window_title": title or None,
+                "window_handle": hwnd,
+                "foreground_verified": bool(app_name),
             }
         except Exception as exc:
             return {"success": False, "error": str(exc)}

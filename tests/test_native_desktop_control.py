@@ -1,10 +1,135 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 from src.tools.desktop import native_control
 
 
 def test_window_aliases_include_chinese_wechat_title() -> None:
-    assert native_control._window_tokens("wechat") == ("微信", "wechat")
+    assert native_control._window_tokens("wechat") == (
+        "微信",
+        "wechat",
+        "weixin",
+    )
+
+
+def test_wechat_window_selection_prefers_main_unowned_window(
+    monkeypatch,
+) -> None:
+    windows = {
+        1: {"title": "微信", "rect": (0, 0, 1200, 800), "owner": 0},
+        2: {"title": "微信", "rect": (300, 200, 700, 500), "owner": 1},
+        3: {"title": "微信登录", "rect": (0, 0, 500, 600), "owner": 0},
+    }
+
+    def enum_windows(callback, extra):
+        for hwnd in windows:
+            callback(hwnd, extra)
+
+    fake_win32gui = SimpleNamespace(
+        EnumWindows=enum_windows,
+        IsWindowVisible=lambda _hwnd: True,
+        GetWindowText=lambda hwnd: windows[hwnd]["title"],
+        GetWindowRect=lambda hwnd: windows[hwnd]["rect"],
+        GetWindow=lambda hwnd, _flag: windows[hwnd]["owner"],
+    )
+    monkeypatch.setitem(sys.modules, "win32gui", fake_win32gui)
+    monkeypatch.setattr(
+        native_control,
+        "_window_process_name",
+        lambda _hwnd: "weixin.exe",
+    )
+
+    assert native_control._find_window("wechat") == (1, "微信")
+
+
+def test_wechat_window_selection_rejects_explorer_title_collision(
+    monkeypatch,
+) -> None:
+    windows = {
+        10: {
+            "title": "WeChat Files - 文件资源管理器",
+            "rect": (0, 0, 1600, 1000),
+            "owner": 0,
+            "process": "explorer.exe",
+        },
+        20: {
+            "title": "微信",
+            "rect": (100, 100, 1100, 800),
+            "owner": 0,
+            "process": "weixin.exe",
+        },
+    }
+
+    def enum_windows(callback, extra):
+        for hwnd in windows:
+            callback(hwnd, extra)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            EnumWindows=enum_windows,
+            IsWindowVisible=lambda _hwnd: True,
+            GetWindowText=lambda hwnd: windows[hwnd]["title"],
+            GetWindowRect=lambda hwnd: windows[hwnd]["rect"],
+            GetWindow=lambda hwnd, _flag: windows[hwnd]["owner"],
+        ),
+    )
+    monkeypatch.setattr(
+        native_control,
+        "_window_process_name",
+        lambda hwnd: windows[hwnd]["process"],
+    )
+
+    assert native_control._find_window("wechat") == (20, "微信")
+
+
+def test_wechat_window_selection_rejects_unknown_process(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            EnumWindows=lambda callback, extra: callback(10, extra),
+            IsWindowVisible=lambda _hwnd: True,
+            GetWindowText=lambda _hwnd: "微信备份文件",
+            GetWindowRect=lambda _hwnd: (0, 0, 1200, 800),
+            GetWindow=lambda _hwnd, _flag: 0,
+        ),
+    )
+    monkeypatch.setattr(
+        native_control,
+        "_window_process_name",
+        lambda _hwnd: "",
+    )
+
+    assert native_control._find_window("wechat") is None
+
+
+def test_wechat_window_selection_accepts_process_with_nonstandard_title(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            EnumWindows=lambda callback, extra: callback(25, extra),
+            IsWindowVisible=lambda _hwnd: True,
+            GetWindowText=lambda _hwnd: "即时通讯",
+            GetWindowRect=lambda _hwnd: (100, 100, 1100, 800),
+            GetWindow=lambda _hwnd, _flag: 0,
+        ),
+    )
+    monkeypatch.setattr(
+        native_control,
+        "_window_process_name",
+        lambda _hwnd: "weixin.exe",
+    )
+
+    assert native_control._find_window("wechat") == (25, "即时通讯")
 
 
 def test_key_codes_support_wechat_search_shortcut() -> None:
@@ -112,6 +237,37 @@ async def test_click_rejects_low_visual_confidence(monkeypatch) -> None:
 
     assert result["success"] is False
     assert "below" in result["error"]
+
+
+async def test_click_refocuses_and_verifies_target_app(monkeypatch) -> None:
+    actions: list[tuple] = []
+    monkeypatch.setattr(
+        native_control,
+        "activate_window",
+        lambda app: actions.append(("focus", app)) or (321, "微信"),
+    )
+    monkeypatch.setattr(
+        native_control,
+        "_move_cursor",
+        lambda x, y, duration=0: actions.append(("move", x, y)),
+    )
+    monkeypatch.setattr(
+        native_control,
+        "_mouse_button_event",
+        lambda button, pressed: actions.append(("button", button, pressed)),
+    )
+    monkeypatch.setattr(native_control.time, "sleep", lambda _seconds: None)
+
+    result = await native_control.DesktopClickTool().execute(
+        100, 200, app_name="wechat", confidence=0.9, wait_after=0
+    )
+
+    assert result["success"] is True
+    assert actions[0] == ("focus", "wechat")
+    assert actions[1] == ("move", 100, 200)
+    assert result["foreground_verified"] is True
+    assert result["window_handle"] == 321
+    assert result["target_app"] == "wechat"
 
 
 async def test_drag_releases_mouse_if_move_fails(monkeypatch) -> None:
